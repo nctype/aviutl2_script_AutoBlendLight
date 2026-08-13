@@ -1,0 +1,1099 @@
+--information:AutoBlendLight v2.5.1
+--label:AutoBlendLight
+--require:2003700
+
+--group:オブジェクト,true
+--track@bright:明るさ,0,200,75,1
+--group
+
+--group:ライティング,true
+--select@color_mode:カラーモード,単色=0,2色（左右）=1
+--select@light_style:スタイル,グラデーション=0,縁取り=1
+--track@light_strength:強さ,0,200,100,1
+--track@light_diffusion:拡散,0,200,25,1
+--track@light_ratio:偏り,-100,100,-90,1
+--track@color_mix:自然補正,0,200,100,1
+--track@color_density:彩度,0,200,100,1
+--check@brightness_link:明るさ連動,1
+--group
+
+--group:ライティング範囲,true
+--figure@mask_type:種類,円
+--track@mask_x:X,-4000,4000,0,1
+--track@mask_y:Y,-4000,4000,0,1
+--track@mask_size:サイズ,0,8000,2000,1
+--track@mask_blur:縁ぼかし,0,1000,0,1
+--track@mask_rotation:角度,-360,360,0,0.1
+--track@mask_aspect:縦横比,-100,100,0,0.1
+--group
+
+--group:環境なじませ,true
+--track@env_blend:なじませ量,0,100,30,1
+--track@env_blur:背景ぼかし,0,1000,500,1
+--group
+
+--group:固定光源,false
+--check@fixed_light:固定光源モード,0
+--group
+
+--[[pixelshader@backlight_env_framebuffer:
+Texture2D frame_tex : register(t0);
+Texture2D char_tex  : register(t1);
+Texture2D bg_tex    : register(t2);
+SamplerState smp    : register(s0);
+
+cbuffer constant0 : register(b0) {
+    float4 c0; // screenW, screenH, objectW, objectH
+    float4 c1; // screenCenterX, screenCenterY, scaleX, scaleY
+    float4 c2; // cosR, sinR, centerX, centerY
+    float4 c3; // multiplyOpacity, reserved, reserved, reserved
+};
+
+float4 backlight_env_framebuffer(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float4 base = frame_tex.Sample(smp, uv);
+    float opacity = saturate(c3.x);
+    if (opacity <= 0.00001 || base.a <= 0.00001) {
+        return base;
+    }
+
+    // Screen -> object inverse transform.
+    float2 screenPos = uv * c0.xy;
+    float2 d = screenPos - c1.xy;
+
+    float2 invRot = float2(
+        d.x * c2.x + d.y * c2.y,
+       -d.x * c2.y + d.y * c2.x
+    );
+
+    if (abs(c1.z) <= 0.00001 || abs(c1.w) <= 0.00001) {
+        return base;
+    }
+
+    float2 localPos = float2(invRot.x / c1.z, invRot.y / c1.w);
+    float2 objUV = float2(
+        (localPos.x + c2.z) / c0.z + 0.5,
+        (localPos.y + c2.w) / c0.w + 0.5
+    );
+
+    if (objUV.x < 0.0 || objUV.x > 1.0 || objUV.y < 0.0 || objUV.y > 1.0) {
+        return base;
+    }
+
+    float4 mask = char_tex.Sample(smp, objUV);
+    if (mask.a <= 0.00001) {
+        return base;
+    }
+
+    float4 bg = bg_tex.Sample(smp, uv);
+
+    float3 baseRGB = base.rgb / max(base.a, 0.00001);
+    float3 bgRGB = float3(1.0, 1.0, 1.0);
+    if (bg.a > 0.00001) {
+        bgRGB = saturate(bg.rgb / bg.a);
+    }
+
+    // Reproduce: blurred background layer -> clipped by character -> Multiply.
+    // Environment Blend is the Multiply strength: 0 = off, 1 = full.
+    float strength = opacity * saturate(mask.a);
+    float3 outRGB = baseRGB * lerp(float3(1.0, 1.0, 1.0), bgRGB, strength);
+
+    return float4(saturate(outRGB) * base.a, base.a);
+}
+]]
+
+--[[pixelshader@backlight_dualcolor_mix:
+Texture2D left_tex  : register(t0);
+Texture2D right_tex : register(t1);
+SamplerState smp    : register(s0);
+
+cbuffer constant0 : register(b0) {
+    float4 c0; // transition, reserved, reserved, reserved
+};
+
+float4 backlight_dualcolor_mix(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float4 leftColor = left_tex.Sample(smp, uv);
+    float4 rightColor = right_tex.Sample(smp, uv);
+
+    float transition = saturate(c0.x);
+    float halfWidth = lerp(0.02, 0.30, transition);
+    float tx = smoothstep(0.5 - halfWidth, 0.5 + halfWidth, uv.x);
+
+    return lerp(leftColor, rightColor, tx);
+}
+]]
+
+--[[pixelshader@backlight_border_only:
+Texture2D border_tex : register(t0);
+Texture2D base_tex   : register(t1);
+SamplerState smp     : register(s0);
+
+cbuffer constant0 : register(b0) {
+    float4 c0; // borderW, borderH, baseW, baseH
+    float4 c1; // r, g, b, effectiveStrength
+    float4 c2; // innerWidthPx, outerWidthPx, reserved, reserved
+};
+
+float sample_base_alpha(float2 baseUV) {
+    return base_tex.Sample(smp, saturate(baseUV)).a;
+}
+
+float4 backlight_border_only(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float4 outlined = border_tex.Sample(smp, uv);
+
+    float2 borderSize = c0.xy;
+    float2 baseSize = c0.zw;
+    float2 offset = (borderSize - baseSize) * 0.5;
+
+    float2 basePos = pos.xy - offset;
+    float baseA = 0.0;
+    float innerA = 0.0;
+
+    if (basePos.x >= 0.0 && basePos.y >= 0.0 &&
+        basePos.x < baseSize.x && basePos.y < baseSize.y) {
+
+        float2 baseUV = basePos / baseSize;
+        baseA = sample_base_alpha(baseUV);
+
+        float innerWidth = max(c2.x, 0.0);
+
+        if (innerWidth > 0.05 && baseA > 0.00001) {
+            float2 px = float2(
+                innerWidth / max(baseSize.x, 1.0),
+                innerWidth / max(baseSize.y, 1.0)
+            );
+            float2 dg = px * 0.70710678;
+
+            // Erode the original alpha at the requested radius.
+            // The difference between the original alpha and this eroded alpha
+            // becomes the INNER part of the rim.
+            float eroded = baseA;
+            eroded = min(eroded, sample_base_alpha(baseUV + float2( px.x, 0.0)));
+            eroded = min(eroded, sample_base_alpha(baseUV + float2(-px.x, 0.0)));
+            eroded = min(eroded, sample_base_alpha(baseUV + float2(0.0,  px.y)));
+            eroded = min(eroded, sample_base_alpha(baseUV + float2(0.0, -px.y)));
+            eroded = min(eroded, sample_base_alpha(baseUV + float2( dg.x,  dg.y)));
+            eroded = min(eroded, sample_base_alpha(baseUV + float2(-dg.x,  dg.y)));
+            eroded = min(eroded, sample_base_alpha(baseUV + float2( dg.x, -dg.y)));
+            eroded = min(eroded, sample_base_alpha(baseUV + float2(-dg.x, -dg.y)));
+
+            innerA = saturate(baseA - eroded);
+        }
+    }
+
+    // AviUtl2 native 縁取り gives us the OUTER part.
+    // Subtract the original object's alpha so only the outside contour remains.
+    float outerA = saturate(outlined.a - baseA);
+
+    // Strength changes visibility/brightness, not the inner/outer width split.
+    float effectiveStrength = max(c1.a, 0.0);
+    float alphaScale = saturate(effectiveStrength / 100.0);
+    float whiteBoost = saturate((effectiveStrength - 100.0) / 100.0) * 0.35;
+
+    float3 tint = lerp(saturate(c1.rgb), float3(1.0, 1.0, 1.0), whiteBoost);
+
+    float rimA = saturate(max(innerA, outerA)) * alphaScale;
+    return float4(tint * rimA, rimA);
+}
+]]
+
+
+
+local pi = math.pi
+
+local src_w = obj.w
+local src_h = obj.h
+local screen_w = obj.screen_w
+local screen_h = obj.screen_h
+
+if src_w <= 0 or src_h <= 0 or screen_w <= 0 or screen_h <= 0 then
+    return
+end
+
+local function clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+local function luminance(r, g, b)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+end
+
+local function rgb_to_hsl(r, g, b)
+    r = r / 255
+    g = g / 255
+    b = b / 255
+    local maxc = math.max(r, g, b)
+    local minc = math.min(r, g, b)
+    local h, s
+    local l = (maxc + minc) * 0.5
+
+    if maxc == minc then
+        h = 0
+        s = 0
+    else
+        local d = maxc - minc
+        if l > 0.5 then
+            s = d / (2 - maxc - minc)
+        else
+            s = d / (maxc + minc)
+        end
+
+        if maxc == r then
+            h = (g - b) / d
+            if g < b then h = h + 6 end
+        elseif maxc == g then
+            h = (b - r) / d + 2
+        else
+            h = (r - g) / d + 4
+        end
+        h = h / 6
+    end
+
+    return h, s, l
+end
+
+local function hue_to_rgb(p, q, t)
+    if t < 0 then t = t + 1 end
+    if t > 1 then t = t - 1 end
+    if t < 1 / 6 then return p + (q - p) * 6 * t end
+    if t < 1 / 2 then return q end
+    if t < 2 / 3 then return p + (q - p) * (2 / 3 - t) * 6 end
+    return p
+end
+
+local function hsl_to_rgb(h, s, l)
+    local r, g, b
+    if s <= 0 then
+        r, g, b = l, l, l
+    else
+        local q
+        if l < 0.5 then
+            q = l * (1 + s)
+        else
+            q = l + s - l * s
+        end
+        local p = 2 * l - q
+        r = hue_to_rgb(p, q, h + 1 / 3)
+        g = hue_to_rgb(p, q, h)
+        b = hue_to_rgb(p, q, h - 1 / 3)
+    end
+    return clamp(math.floor(r * 255 + 0.5), 0, 255), clamp(math.floor(g * 255 + 0.5), 0, 255), clamp(math.floor(b * 255 + 0.5), 0, 255)
+end
+
+local function tune_backlight_color(r, g, b, mix_value)
+    local raw_r, raw_g, raw_b = r, g, b
+    local h, s, l = rgb_to_hsl(r, g, b)
+    local lum_n = luminance(r, g, b) / 255
+
+    -- Color confidence is based on ABSOLUTE channel separation rather than
+    -- HSL saturation alone. Near-black compression noise such as (0,2,0)
+    -- can have a very high HSL saturation even though it contains almost no
+    -- reliable color information. Near-white highlights have the same hue
+    -- instability when RGB channels differ by only a few levels.
+    local max_rgb = math.max(r, g, b)
+    local min_rgb = math.min(r, g, b)
+    local chroma_n = (max_rgb - min_rgb) / 255
+
+    local color_confidence = clamp((chroma_n - 0.025) / 0.16, 0, 1)
+
+    -- Very dark samples need stronger confidence before they are allowed to
+    -- tint the backlight. This keeps black / almost-black footage neutral,
+    -- while still allowing genuinely colored dark lights (neon, LEDs, etc.).
+    if lum_n < 0.10 then
+        local dark_confidence = clamp((max_rgb - 8) / 36, 0, 1)
+        color_confidence = color_confidence * dark_confidence
+    end
+
+    -- Preserve clear environment colors, but collapse uncertain hue toward
+    -- neutral instead of forcing a minimum saturation.
+    s = clamp(s * 0.58 * color_confidence, 0, 0.46)
+
+    l = l + (1 - l) * 0.16
+    if lum_n < 0.06 then
+        -- A black background has no trustworthy hue. Give it a neutral light
+        -- value rather than amplifying codec/chroma noise into green/blue.
+        l = 0.70
+    else
+        l = clamp(l, 0.52, 0.84)
+    end
+
+    local tuned_r, tuned_g, tuned_b = hsl_to_rgb(h, s, l)
+
+    -- Uncertain colors are pulled a little farther toward white. Clear warm,
+    -- cool, or neon colors keep much more of their original hue.
+    local white_mix =
+        0.06 +
+        (1 - lum_n) * 0.05 +
+        (1 - color_confidence) * 0.08
+
+    tuned_r = clamp(math.floor(tuned_r * (1 - white_mix) + 255 * white_mix + 0.5), 0, 255)
+    tuned_g = clamp(math.floor(tuned_g * (1 - white_mix) + 255 * white_mix + 0.5), 0, 255)
+    tuned_b = clamp(math.floor(tuned_b * (1 - white_mix) + 255 * white_mix + 0.5), 0, 255)
+
+    local m = clamp(mix_value, 0, 200)
+
+    if m <= 100 then
+        -- 0 = raw sampled environment color
+        -- 100 = recommended automatic correction
+        local t = m / 100
+        return
+            clamp(math.floor(raw_r + (tuned_r - raw_r) * t + 0.5), 0, 255),
+            clamp(math.floor(raw_g + (tuned_g - raw_g) * t + 0.5), 0, 255),
+            clamp(math.floor(raw_b + (tuned_b - raw_b) * t + 0.5), 0, 255)
+    end
+
+    -- 100..200 = progressively more neutral/white.
+    local t = (m - 100) / 100
+    local neutral_h, _, neutral_l = rgb_to_hsl(tuned_r, tuned_g, tuned_b)
+    local neutral_r, neutral_g, neutral_b = hsl_to_rgb(
+        neutral_h,
+        0.05,
+        clamp(neutral_l + (1 - neutral_l) * 0.55, 0, 0.94)
+    )
+
+    return
+        clamp(math.floor(tuned_r + (neutral_r - tuned_r) * t + 0.5), 0, 255),
+        clamp(math.floor(tuned_g + (neutral_g - tuned_g) * t + 0.5), 0, 255),
+        clamp(math.floor(tuned_b + (neutral_b - tuned_b) * t + 0.5), 0, 255)
+end
+
+-- Final user saturation control, applied after automatic color correction.
+-- 0 = neutral, 100 = current result, 200 = up to 2x saturation.
+local function apply_color_density(r, g, b, density_value)
+    local h, s, l = rgb_to_hsl(r, g, b)
+    local density = clamp(density_value / 100, 0, 2)
+    s = clamp(s * density, 0, 1)
+    return hsl_to_rgb(h, s, l)
+end
+
+
+-- Automatic saturation reduction for uncertain / conflicting sampled colors.
+--
+-- confidence:
+--   0 = nearby light candidates disagree strongly, move toward neutral
+--   1 = nearby colored light candidates agree, keep the tuned saturation
+--
+-- The user's "颜色浓度" is applied AFTER this, so the automatic decision can
+-- still be overridden aesthetically without changing the sampling algorithm.
+local function apply_auto_color_confidence(r, g, b, confidence)
+    local h, s, l = rgb_to_hsl(r, g, b)
+    confidence = clamp(confidence, 0, 1)
+
+    -- Keep a little color even when confidence is poor, so transitions do not
+    -- collapse abruptly to pure white.
+    local auto_saturation_scale = 0.22 + 0.78 * confidence
+    s = clamp(s * auto_saturation_scale, 0, 1)
+
+    return hsl_to_rgb(h, s, l)
+end
+
+local has_background = obj.copybuffer("cache:aul2_backlight_bg", "framebuffer")
+
+-- Compose the output item's base transform with the script/effect-relative transform.
+-- AviUtl2 SDK: obj.ox/obj.sx/... are relative to the image output item's parameters.
+-- Position/rotation/center are additive, scale is multiplicative.
+local output_x = obj.getvalue("x") or obj.x or 0
+local output_y = obj.getvalue("y") or obj.y or 0
+local output_sx = obj.getvalue("sx") or 1
+local output_sy = obj.getvalue("sy") or 1
+local output_cx = obj.getvalue("cx") or 0
+local output_cy = obj.getvalue("cy") or 0
+local output_rz = obj.getvalue("rz") or 0
+
+local base_x = output_x + (obj.ox or 0)
+local base_y = output_y + (obj.oy or 0)
+local scale_x = output_sx * (obj.sx or 1)
+local scale_y = output_sy * (obj.sy or 1)
+local center_x = output_cx + (obj.cx or 0)
+local center_y = output_cy + (obj.cy or 0)
+local rz = (output_rz + (obj.rz or 0)) * pi / 180
+local cos_r = math.cos(rz)
+local sin_r = math.sin(rz)
+local screen_center_x = screen_w * 0.5 + base_x
+local screen_center_y = screen_h * 0.5 + base_y
+
+-- Preview guide and coordinate handling for the backlight mask.
+--
+-- Normal mode:
+--   mask_x / mask_y are object-local coordinates, therefore the mask follows
+--   the character.
+--
+-- Fixed-light mode:
+--   mask_x / mask_y are screen-space coordinates (same coordinate system as
+--   the object's standard X/Y output), therefore the light stays fixed while
+--   the character moves through it.
+local fixed_enabled = fixed_light == 1 or fixed_light == true
+local current_mask_type = mask_type
+if current_mask_type == nil or current_mask_type == "" then
+    current_mask_type = "円"
+end
+
+local function screen_relative_to_object_local(rel_x, rel_y)
+    local target_x = screen_w * 0.5 + rel_x
+    local target_y = screen_h * 0.5 + rel_y
+    local dx = target_x - screen_center_x
+    local dy = target_y - screen_center_y
+
+    local inv_x = dx * cos_r + dy * sin_r
+    local inv_y = -dx * sin_r + dy * cos_r
+
+    local safe_scale_x = scale_x
+    local safe_scale_y = scale_y
+    if math.abs(safe_scale_x) < 0.00001 then
+        safe_scale_x = safe_scale_x < 0 and -0.00001 or 0.00001
+    end
+    if math.abs(safe_scale_y) < 0.00001 then
+        safe_scale_y = safe_scale_y < 0 and -0.00001 or 0.00001
+    end
+
+    return inv_x / safe_scale_x, inv_y / safe_scale_y
+end
+
+local effective_mask_x = mask_x
+local effective_mask_y = mask_y
+if fixed_enabled then
+    effective_mask_x, effective_mask_y = screen_relative_to_object_local(mask_x, mask_y)
+end
+
+local function build_mask_guide_points(shape_name, cx, cy, size, aspect, rotation_deg)
+    local points = {}
+    local radius = math.max(size, 0) * 0.5
+    local radius_x = radius
+    local radius_y = radius
+    local guide_aspect = clamp(aspect, -100, 100) / 100
+
+    if guide_aspect >= 0 then
+        radius_y = radius_y * (1 - guide_aspect)
+    else
+        radius_x = radius_x * (1 + guide_aspect)
+    end
+
+    local guide_r = rotation_deg * pi / 180
+    local guide_cos = math.cos(guide_r)
+    local guide_sin = math.sin(guide_r)
+
+    local function push(x, y)
+        local gx = x * guide_cos - y * guide_sin
+        local gy = x * guide_sin + y * guide_cos
+        points[#points + 1] = cx + gx
+        points[#points + 1] = cy + gy
+    end
+
+    local shape = tostring(shape_name or "円")
+    local lower = string.lower(shape)
+
+    -- The actual masking uses AviUtl2's native Mask type directly.
+    -- This preview guide only approximates the common built-in shapes.
+    if string.find(shape, "四角") or string.find(lower, "square") or string.find(lower, "rect") then
+        push(-radius_x, -radius_y)
+        push(radius_x, -radius_y)
+        push(radius_x, radius_y)
+        push(-radius_x, radius_y)
+    elseif string.find(shape, "菱") or string.find(lower, "diamond") then
+        push(0, -radius_y)
+        push(radius_x, 0)
+        push(0, radius_y)
+        push(-radius_x, 0)
+    elseif string.find(shape, "三角") or string.find(lower, "triangle") then
+        push(0, -radius_y)
+        push(radius_x, radius_y)
+        push(-radius_x, radius_y)
+    else
+        local guide_segments = 64
+        for i = 0, guide_segments - 1 do
+            local a = i * pi * 2 / guide_segments
+            push(math.cos(a) * radius_x, math.sin(a) * radius_y)
+        end
+    end
+
+    return points, #points / 2
+end
+
+local function object_local_to_screen_relative(local_x, local_y)
+    -- Convert the SAME local coordinates used by the actual Mask effect into
+    -- screen-anchor coordinates. This includes the object's scale + rotation.
+    --
+    -- "screen" anchor coordinates are relative to the composition center, so
+    -- base_x / base_y are added after the local transform.
+    local lx = local_x * scale_x
+    local ly = local_y * scale_y
+    local rx = lx * cos_r - ly * sin_r
+    local ry = lx * sin_r + ly * cos_r
+    return base_x + rx, base_y + ry
+end
+
+if obj.getoption("gui") then
+    -- Both modes expose a draggable center handle.
+    if fixed_enabled then
+        obj.setanchor("mask_x,mask_y", 0, "screen")
+    else
+        obj.setanchor("mask_x,mask_y", 0)
+    end
+
+    if fixed_enabled then
+        -- IMPORTANT:
+        -- The actual Mask still lives in object-local space after the fixed
+        -- screen center has been converted by screen_relative_to_object_local().
+        -- Therefore its displayed outline must be built in that SAME local
+        -- space first, then transformed to screen coordinates.
+        --
+        -- The previous preview incorrectly used mask_size directly as screen
+        -- pixels, so object scale/rotation made the big guide circle disagree
+        -- with the real covered area.
+        local local_points, guide_count = build_mask_guide_points(
+            current_mask_type,
+            effective_mask_x,
+            effective_mask_y,
+            mask_size,
+            mask_aspect,
+            mask_rotation
+        )
+
+        if guide_count >= 2 then
+            local screen_points = {}
+            for i = 1, #local_points, 2 do
+                local sx, sy = object_local_to_screen_relative(
+                    local_points[i],
+                    local_points[i + 1]
+                )
+                screen_points[#screen_points + 1] = sx
+                screen_points[#screen_points + 1] = sy
+            end
+            obj.setanchor(screen_points, guide_count, "loop", "screen")
+        end
+    else
+        local guide_points, guide_count = build_mask_guide_points(
+            current_mask_type,
+            effective_mask_x,
+            effective_mask_y,
+            mask_size,
+            mask_aspect,
+            mask_rotation
+        )
+
+        if guide_count >= 2 then
+            obj.setanchor(guide_points, guide_count, "loop")
+        end
+    end
+end
+
+local function local_to_framebuffer(px, py)
+    local lx = (px + 0.5 - src_w * 0.5 - center_x) * scale_x
+    local ly = (py + 0.5 - src_h * 0.5 - center_y) * scale_y
+    local rx = lx * cos_r - ly * sin_r
+    local ry = lx * sin_r + ly * cos_r
+    return math.floor(screen_center_x + rx + 0.5), math.floor(screen_center_y + ry + 0.5)
+end
+
+-- Convert an object-local coordinate directly to framebuffer coordinates.
+-- mask_x / mask_y use this same local coordinate system, so color sampling
+-- can follow the Mask center even when that center is outside the character.
+local function object_local_to_framebuffer(local_x, local_y)
+    local lx = local_x * scale_x
+    local ly = local_y * scale_y
+    local rx = lx * cos_r - ly * sin_r
+    local ry = lx * sin_r + ly * cos_r
+    return math.floor(screen_center_x + rx + 0.5), math.floor(screen_center_y + ry + 0.5)
+end
+
+-- AutoBacklight color and brightness pickup (v2.2.1).
+--
+-- The Mask center remains the origin of color judgment, but the algorithm now
+-- estimates "light color" instead of simply averaging every nearby surface.
+--
+-- Why:
+-- A dark green object / palm leaf / codec noise can be highly saturated and
+-- therefore win a normal color average even though it is not a light source.
+-- v2.1.5 first searches for the brighter pixels around the Mask center, then
+-- calculates the backlight color only from that "light candidate" pool.
+--
+-- Mono: one light color around the Mask center.
+-- Dual: left/right light candidates around the same Mask center are evaluated
+-- separately.
+
+local mode = tonumber(color_mode) or 0
+local style_mode = tonumber(light_style) or 0
+local brightness_link_enabled =
+    brightness_link == 1 or brightness_link == true
+mode = math.floor(clamp(mode, 0, 1))
+
+local global_color = {245, 245, 245}
+local left_color = {245, 245, 245}
+local right_color = {245, 245, 245}
+
+-- Automatic brightness factor from the Mask-center environment.
+-- 0 = no usable environmental light, 1 = full user-set backlight strength.
+local global_light_factor = 0
+local left_light_factor = 0
+local right_light_factor = 0
+
+if has_background then
+    -- Force a fresh read from the current framebuffer before sampling.
+    obj.pixeloption("get", "framebuffer")
+
+    -- v2.2.3:
+    -- Color judgment is now strictly local to the Mask center.
+    --
+    -- The previous wide search area could let a distant bright object win the
+    -- color vote even when the Mask center itself was over a flat color.
+    -- That was especially visible on simple test images: a green area could
+    -- unexpectedly produce a blue backlight.
+    --
+    -- We now average only a small circular patch around the Mask center.
+    -- This is still more stable than reading a single pixel, but it no longer
+    -- allows unrelated distant lights to take over the hue.
+    local pickup_radius = clamp(mask_size * 0.04, 36, 120)
+
+    local grid = 11
+    local half = (grid - 1) * 0.5
+    local samples = {}
+
+    for gy = 0, grid - 1 do
+        local ny = (gy - half) / half
+        for gx = 0, grid - 1 do
+            local nx = (gx - half) / half
+            local dist2 = nx * nx + ny * ny
+
+            if dist2 <= 1.0 then
+                local local_x = effective_mask_x + nx * pickup_radius
+                local local_y = effective_mask_y + ny * pickup_radius
+                local fx, fy = object_local_to_framebuffer(local_x, local_y)
+
+                if fx >= 0 and fy >= 0 and fx < screen_w and fy < screen_h then
+                    local r, g, b, a = obj.getpixel(fx, fy, "rgb")
+                    if r and a and a > 0 then
+                        local lum = luminance(r, g, b)
+                        local max_rgb = math.max(r, g, b)
+                        local min_rgb = math.min(r, g, b)
+
+                        samples[#samples + 1] = {
+                            r = r,
+                            g = g,
+                            b = b,
+                            lum = lum,
+                            chroma = (max_rgb - min_rgb) / 255,
+                            side = nx,
+                            dist2 = dist2,
+                            alpha = a / 255
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    local function filter_side(source, want_left)
+        local out = {}
+        for i = 1, #source do
+            local s = source[i]
+            if (want_left and s.side < 0) or
+               ((not want_left) and s.side >= 0) then
+                out[#out + 1] = s
+            end
+        end
+        return out
+    end
+
+    local function estimate_center_color(source, fallback)
+        local use = source
+        if #use < 6 and fallback then
+            use = fallback
+        end
+
+        if #use == 0 then
+            return 0, 0, 0, 0
+        end
+
+        local sum_r, sum_g, sum_b = 0, 0, 0
+        local sum_lum = 0
+        local sum_w = 0
+
+        local hue_vec_x = 0
+        local hue_vec_y = 0
+        local hue_weight_sum = 0
+
+        for i = 1, #use do
+            local s = use[i]
+
+            -- Center pixels matter most. The rim is only there to stabilize
+            -- video/noise and boundary transitions.
+            local spatial_weight = 1.0 - 0.72 * s.dist2
+            local w = s.alpha * spatial_weight
+
+            if w > 0.000001 then
+                sum_r = sum_r + s.r * w
+                sum_g = sum_g + s.g * w
+                sum_b = sum_b + s.b * w
+                sum_lum = sum_lum + s.lum * w
+                sum_w = sum_w + w
+
+                -- Measure whether the local colored pixels agree on a hue.
+                local h, sat, _ = rgb_to_hsl(s.r, s.g, s.b)
+                local chroma_vote =
+                    w *
+                    clamp((s.chroma - 0.018) / 0.18, 0, 1) *
+                    clamp(sat, 0, 1)
+
+                if chroma_vote > 0.000001 then
+                    local angle = h * pi * 2
+                    hue_vec_x = hue_vec_x + math.cos(angle) * chroma_vote
+                    hue_vec_y = hue_vec_y + math.sin(angle) * chroma_vote
+                    hue_weight_sum = hue_weight_sum + chroma_vote
+                end
+            end
+        end
+
+        if sum_w <= 0.00001 then
+            return 0, 0, 0, 0
+        end
+
+        local r = clamp(math.floor(sum_r / sum_w + 0.5), 0, 255)
+        local g = clamp(math.floor(sum_g / sum_w + 0.5), 0, 255)
+        local b = clamp(math.floor(sum_b / sum_w + 0.5), 0, 255)
+        local mean_lum = sum_lum / sum_w
+
+        -- Hue confidence is intentionally conservative.
+        -- A uniform green/red/blue patch gets a high value; mixed colors
+        -- become more neutral instead of suddenly choosing one side.
+        local hue_agreement = 0
+        if hue_weight_sum > 0.00001 then
+            hue_agreement =
+                math.sqrt(hue_vec_x * hue_vec_x + hue_vec_y * hue_vec_y) /
+                hue_weight_sum
+        end
+        hue_agreement = clamp(hue_agreement, 0, 1)
+
+        local avg_max = math.max(r, g, b)
+        local avg_min = math.min(r, g, b)
+        local avg_chroma = (avg_max - avg_min) / 255
+        local color_presence = clamp((avg_chroma - 0.015) / 0.16, 0, 1)
+        local auto_confidence = hue_agreement * color_presence
+
+        local tr, tg, tb = tune_backlight_color(r, g, b, color_mix)
+        tr, tg, tb = apply_auto_color_confidence(
+            tr, tg, tb, auto_confidence
+        )
+
+        local fr, fg, fb = apply_color_density(
+            tr, tg, tb, color_density
+        )
+
+        -- Black means no usable environmental light.
+        -- The user's Strength acts as the maximum; actual strength fades in
+        -- smoothly as the Mask-center patch becomes brighter.
+        local light_factor = clamp((mean_lum - 8) / 80, 0, 1)
+        light_factor =
+            light_factor * light_factor * (3 - 2 * light_factor)
+
+        return fr, fg, fb, light_factor
+    end
+
+    if #samples > 0 then
+        local gr, gg, gb, gf = estimate_center_color(samples, nil)
+        global_color = {gr, gg, gb}
+        global_light_factor = gf or 0
+
+        if mode >= 1 then
+            local left = filter_side(samples, true)
+            local right = filter_side(samples, false)
+
+            local lr, lg, lb, lf = estimate_center_color(left, samples)
+            local rr, rg, rb, rf = estimate_center_color(right, samples)
+
+            left_color = {lr, lg, lb}
+            right_color = {rr, rg, rb}
+            left_light_factor = lf or 0
+            right_light_factor = rf or 0
+        end
+    end
+
+    obj.pixeloption("get", "object")
+end
+
+local function color_value(c)
+    -- AviUtl2 color parameters use a numeric RGB value (0x000000..0xffffff).
+    -- Do not pass a hexadecimal string here: values near certain RGB ranges
+    -- can be interpreted inconsistently by the effect parameter parser.
+    return RGB(
+        clamp(math.floor(c[1] + 0.5), 0, 255),
+        clamp(math.floor(c[2] + 0.5), 0, 255),
+        clamp(math.floor(c[3] + 0.5), 0, 255)
+    )
+end
+
+local light_colors
+if mode == 0 then
+    light_colors = {global_color}
+else
+    light_colors = {left_color, right_color}
+end
+
+-- -------------------------------------------------------------------------
+-- Memory-adaptive rendering
+--
+-- AviUtl2 internally uses RGBA 16-bit float images. Large source PNG/PSD
+-- textures therefore become expensive very quickly when several full-size
+-- cache buffers are alive at once.
+--
+-- The character itself is still drawn at its ORIGINAL resolution.
+-- Only the soft backlight working image is automatically reduced when the
+-- source is very large. This keeps high-resolution line art sharp while
+-- preventing the Light / cache chain from exhausting VRAM.
+-- -------------------------------------------------------------------------
+
+local source_pixels = src_w * src_h
+local max_work_dimension = 3072
+local max_work_pixels = 6000000
+
+local work_scale = 1.0
+if src_w > max_work_dimension then
+    work_scale = math.min(work_scale, max_work_dimension / src_w)
+end
+if src_h > max_work_dimension then
+    work_scale = math.min(work_scale, max_work_dimension / src_h)
+end
+if source_pixels > max_work_pixels then
+    work_scale = math.min(work_scale, math.sqrt(max_work_pixels / source_pixels))
+end
+
+-- Avoid microscopic resampling differences for ordinary-size artwork.
+if work_scale > 0.995 then
+    work_scale = 1.0
+end
+
+local work_w = math.max(1, math.floor(src_w * work_scale + 0.5))
+local work_h = math.max(1, math.floor(src_h * work_scale + 0.5))
+local work_inv_scale = 1.0 / work_scale
+
+-- L2 + L3: brightness is applied to the original full-resolution character.
+-- Draw it immediately, before we replace the current object with a smaller
+-- light-working image.
+obj.effect("色調補正", "明るさ", bright)
+obj.setoption("blend", "none")
+obj.draw()
+
+-- Build a reduced working copy only when the source is unusually large.
+-- drawtarget=tempbuffer ignores the object's normal transform, so a relative
+-- zoom is enough to generate an aligned proxy.
+if work_scale < 1.0 then
+    obj.setoption("drawtarget", "tempbuffer", work_w, work_h)
+    obj.setoption("blend", "none")
+    obj.draw(0, 0, 0, work_scale)
+    obj.setoption("drawtarget", "framebuffer")
+    obj.copybuffer("object", "tempbuffer")
+end
+
+-- This is now the only persistent character-sized base cache.
+-- For large artwork it is the reduced proxy, not the original 4K+ texture.
+obj.copybuffer("cache:autobacklight_workbase", "object")
+
+local actual_work_w = obj.w
+local actual_work_h = obj.h
+
+-- Prepare the blurred L1 background only after the original character has
+-- already been converted into the small working copy. This avoids needing a
+-- second full-resolution source cache just to restore the character.
+if has_background and env_blend > 0 then
+    obj.copybuffer("object", "cache:aul2_backlight_bg")
+    obj.effect("ぼかし", "範囲", env_blur, "縦横比", 0, "光の強さ", 0, "サイズ固定", 1)
+    obj.copybuffer("cache:aul2_backlight_bgblur", "object")
+end
+
+local work_diffusion = light_diffusion * work_scale
+local work_mask_x = effective_mask_x * work_scale
+local work_mask_y = effective_mask_y * work_scale
+local work_mask_size = mask_size * work_scale
+local work_mask_blur = mask_blur * work_scale
+
+local function resolve_light_factor(light_factor)
+    if not brightness_link_enabled then
+        return 1.0
+    end
+    return clamp(light_factor or 0, 0, 1)
+end
+
+local function get_effective_strength(light_factor)
+    return light_strength * resolve_light_factor(light_factor)
+end
+
+local function apply_light(color, light_factor)
+    local effective_strength =
+        get_effective_strength(light_factor)
+
+    obj.effect(
+        "ライト",
+        "強さ", effective_strength,
+        "拡散", work_diffusion,
+        "比率", light_ratio,
+        "逆光", 1,
+        "color", color_value(color)
+    )
+end
+
+
+local function apply_border(color, light_factor)
+    local effective_strength =
+        get_effective_strength(light_factor)
+
+    -- In 描边 mode, "扩散" becomes the TOTAL rim width.
+    local total_width =
+        clamp(1.0 + work_diffusion * 0.30, 1.0, 64.0)
+
+    -- Reuse "偏向" as the inside/outside distribution:
+    --  -100 = all outside
+    --     0 = half outside / half inside
+    --  +100 = all inside
+    local inside_ratio =
+        clamp((light_ratio + 100.0) / 200.0, 0.0, 1.0)
+
+    local inner_width = total_width * inside_ratio
+    local outer_width = total_width * (1.0 - inside_ratio)
+
+    local base_w = obj.w
+    local base_h = obj.h
+
+    -- AviUtl2 native 縁取り is used for the outside portion.
+    -- At +100 偏向 the outside size becomes 0, leaving only the inner rim.
+    obj.effect(
+        "縁取り",
+        "サイズ", outer_width,
+        "ぼかし", 0,
+        "color", color_value(color)
+    )
+
+    local border_w = obj.w
+    local border_h = obj.h
+
+    -- Keep the native outer rim, generate an inner rim from the original alpha,
+    -- and combine the two into one transparent rim layer.
+    obj.pixelshader(
+        "backlight_border_only",
+        "object",
+        {
+            "object",
+            "cache:autobacklight_workbase"
+        },
+        {
+            border_w,
+            border_h,
+            base_w,
+            base_h,
+
+            color[1] / 255,
+            color[2] / 255,
+            color[3] / 255,
+            effective_strength,
+
+            inner_width,
+            outer_width,
+            0,
+            0
+        },
+        "copy",
+        "clamp"
+    )
+end
+
+if mode == 0 then
+    -- Single-color mode needs only one reduced working image.
+    obj.copybuffer("object", "cache:autobacklight_workbase")
+
+    if style_mode >= 1 then
+        -- 描边: native 縁取り replaces ライト.
+        apply_border(global_color, global_light_factor)
+    else
+        -- 渐变: keep the original ライト implementation.
+        apply_light(global_color, global_light_factor)
+    end
+else
+    -- Dual-color mode keeps only ONE side as a cache.
+    obj.copybuffer("object", "cache:autobacklight_workbase")
+    if style_mode >= 1 then
+        apply_border(left_color, left_light_factor)
+    else
+        apply_light(left_color, left_light_factor)
+    end
+    obj.copybuffer("cache:autobacklight_left", "object")
+
+    obj.copybuffer("object", "cache:autobacklight_workbase")
+    if style_mode >= 1 then
+        apply_border(right_color, right_light_factor)
+    else
+        apply_light(right_color, right_light_factor)
+    end
+
+    obj.pixelshader(
+        "backlight_dualcolor_mix",
+        "object",
+        {
+            "cache:autobacklight_left",
+            "object"
+        },
+        {
+            0.55, 0, 0, 0
+        },
+        "copy",
+        "clamp"
+    )
+end
+
+-- Apply the shared mask in the proxy's pixel units. The final draw is enlarged
+-- by the inverse proxy scale, so the on-screen mask size stays identical to
+-- the user-facing parameters.
+obj.effect(
+    "マスク",
+    "X", work_mask_x,
+    "Y", work_mask_y,
+    "回転", mask_rotation,
+    "サイズ", work_mask_size,
+    "縦横比", mask_aspect,
+    "ぼかし", work_mask_blur,
+    "type", current_mask_type,
+    "マスクの反転", 0,
+    "元のサイズに合わせる", 0
+)
+
+-- L4-L7: restore the proxy to the original on-screen size.
+obj.setoption("blend", "none")
+obj.draw(0, 0, 0, work_inv_scale)
+
+-- L8-L10 environment Multiply.
+-- Use the reduced character base as the alpha mask. Because the shader works
+-- in framebuffer space, this costs only screen-sized buffers regardless of
+-- whether the source artwork is 1700x4500, 4000x4000, or larger.
+if has_background and env_blend > 0 then
+    local multiply_opacity = clamp(env_blend / 100, 0, 1)
+
+    local has_pre_env = obj.copybuffer(
+        "cache:autobacklight_pre_env",
+        "framebuffer"
+    )
+
+    if has_pre_env then
+        -- The proxy is drawn enlarged by work_inv_scale, therefore one proxy
+        -- pixel corresponds to work_inv_scale original-image pixels on screen.
+        local env_scale_x = scale_x * work_inv_scale
+        local env_scale_y = scale_y * work_inv_scale
+        local env_center_x = center_x * work_scale
+        local env_center_y = center_y * work_scale
+
+        obj.pixelshader(
+            "backlight_env_framebuffer",
+            "framebuffer",
+            {
+                "cache:autobacklight_pre_env",
+                "cache:autobacklight_workbase",
+                "cache:aul2_backlight_bgblur"
+            },
+            {
+                screen_w, screen_h, actual_work_w, actual_work_h,
+                screen_center_x, screen_center_y, env_scale_x, env_scale_y,
+                cos_r, sin_r, env_center_x, env_center_y,
+                multiply_opacity, 0, 0, 0
+            },
+            "copy",
+            "clamp"
+        )
+    end
+end
