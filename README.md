@@ -19,15 +19,19 @@ Click a language below to expand the documentation.
 
 ## インストール方法
 
-1. 使用する `.anm2` ファイルを次のフォルダへ配置します。フォルダがない場合は作成してください。  
-   `ProgramData\aviutl2\Script\AutoBlendLight\`
-2. AviUtl2 を再起動します。
+1. GitHub のリポジトリページ右側にある **Releases** から最新バージョンを開きます。
+2. **Assets** から `AutoBlendLight_vX.X.X.au2pkg.zip` をダウンロードします。
+3. ダウンロードした `.au2pkg.zip` を **解凍せずに、そのまま AviUtl2 のプレビュー画面へドラッグ＆ドロップ**します。
+4. インストール確認後、AviUtl2 が再起動すれば完了です。
 
-### ファイル
+スクリプト本体と英語・中国語の言語ファイルはまとめてインストールされます。  
+AviUtl2 の言語設定に合わせて AutoBlendLight の表示言語も切り替わります。
 
-- `AutoBlendLight.anm2`：日本語
-- `AutoBlendLight_CN.anm2`：中国語
-- `AutoBlendLight_EN.anm2`：英語
+### パッケージ内容
+
+- `AutoBlendLight.anm2`：スクリプト本体（日本語）
+- `English.AutoBlendLight.aul2`：英語表示用
+- `简体中文.AutoBlendLight.aul2`：簡体字中国語表示用
 
 ## 基本操作
 
@@ -69,15 +73,19 @@ Click a language below to expand the documentation.
 
 ## 安装方法
 
-1. 将需要使用的 `.anm2` 文件放入下面的文件夹。如果没有该文件夹，可以自行创建。  
-   `ProgramData\aviutl2\Script\AutoBlendLight\`
-2. 重启 AviUtl2。
+1. 在 GitHub 仓库页面右侧找到 **Releases**，进入最新版本。
+2. 在 **Assets** 中下载 `AutoBlendLight_vX.X.X.au2pkg.zip`。
+3. **不要解压**，直接将下载好的 `.au2pkg.zip` 拖入 AviUtl2 的预览画面。
+4. 确认安装后，AviUtl2 会自动重启，重启完成即可使用。
 
-### 文件
+脚本本体以及英语、简体中文语言文件会一起安装。  
+AutoBlendLight 的界面语言会跟随 AviUtl2 的语言设置自动切换。
 
-- `AutoBlendLight.anm2`：日语
-- `AutoBlendLight_CN.anm2`：中文
-- `AutoBlendLight_EN.anm2`：英语
+### 包含文件
+
+- `AutoBlendLight.anm2`：脚本本体（日语）
+- `English.AutoBlendLight.aul2`：英语界面
+- `简体中文.AutoBlendLight.aul2`：简体中文界面
 
 ## 基本操作
 
@@ -119,15 +127,19 @@ It can also react to flickering light sources.
 
 ## Installation
 
-1. Place the `.anm2` file you want to use in the folder below. Create the folder if it does not exist.  
-   `ProgramData\aviutl2\Script\AutoBlendLight\`
-2. Restart AviUtl2.
+1. Open the latest version from **Releases** on the right side of the GitHub repository page.
+2. Download `AutoBlendLight_vX.X.X.au2pkg.zip` from **Assets**.
+3. **Do not extract the ZIP.** Drag and drop the downloaded `.au2pkg.zip` directly onto the AviUtl2 preview window.
+4. Confirm the installation. AviUtl2 will restart automatically, and AutoBlendLight will be ready to use.
 
-### Files
+The script and the English / Simplified Chinese language files are installed together.  
+AutoBlendLight automatically follows the language selected in AviUtl2.
 
-- `AutoBlendLight.anm2` — Japanese
-- `AutoBlendLight_CN.anm2` — Chinese
-- `AutoBlendLight_EN.anm2` — English
+### Package Contents
+
+- `AutoBlendLight.anm2` — Script file (Japanese)
+- `English.AutoBlendLight.aul2` — English UI
+- `简体中文.AutoBlendLight.aul2` — Simplified Chinese UI
 
 ## Basic Usage
 
