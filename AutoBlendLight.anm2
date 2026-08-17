@@ -1,4 +1,4 @@
---information:AutoBlendLight v2.5.1
+--information:AutoBlendLight v1.2.0
 --label:AutoBlendLight
 --require:2003700
 
@@ -399,6 +399,7 @@ local output_sx = obj.getvalue("sx") or 1
 local output_sy = obj.getvalue("sy") or 1
 local output_cx = obj.getvalue("cx") or 0
 local output_cy = obj.getvalue("cy") or 0
+local output_cz = obj.getvalue("cz") or 0
 local output_rz = obj.getvalue("rz") or 0
 
 local base_x = output_x + (obj.ox or 0)
@@ -407,6 +408,7 @@ local scale_x = output_sx * (obj.sx or 1)
 local scale_y = output_sy * (obj.sy or 1)
 local center_x = output_cx + (obj.cx or 0)
 local center_y = output_cy + (obj.cy or 0)
+local center_z = output_cz + (obj.cz or 0)
 local rz = (output_rz + (obj.rz or 0)) * pi / 180
 local cos_r = math.cos(rz)
 local sin_r = math.sin(rz)
@@ -1055,8 +1057,40 @@ obj.effect(
 )
 
 -- L4-L7: restore the proxy to the original on-screen size.
+--
+-- Large-image proxy center correction:
+-- The proxy image is work_scale times smaller than the source, therefore the
+-- effective center coordinates used when the proxy is enlarged must also be
+-- work_scale times smaller.  Otherwise changing the output Center X / Y / Z makes
+-- the proxy's original-image component shift away from the full-resolution
+-- character and appear as a duplicated/ghost image.
+--
+-- obj.getvalue("cx"/"cy"/"cz") is the base center and obj.cx/obj.cy/obj.cz are writable
+-- relative-center offsets.  Add a temporary relative correction so that:
+--
+--   output_center + corrected_relative_center
+--     = (output_center + original_relative_center) * work_scale
+--
+-- Restore the original values immediately after drawing so the rest of the
+-- script and following processing see the user's original transform.
+local saved_relative_cx = obj.cx or 0
+local saved_relative_cy = obj.cy or 0
+local saved_relative_cz = obj.cz or 0
+
+if work_scale < 1.0 then
+    obj.cx = saved_relative_cx + center_x * (work_scale - 1.0)
+    obj.cy = saved_relative_cy + center_y * (work_scale - 1.0)
+    obj.cz = saved_relative_cz + center_z * (work_scale - 1.0)
+end
+
 obj.setoption("blend", "none")
 obj.draw(0, 0, 0, work_inv_scale)
+
+if work_scale < 1.0 then
+    obj.cx = saved_relative_cx
+    obj.cy = saved_relative_cy
+    obj.cz = saved_relative_cz
+end
 
 -- L8-L10 environment Multiply.
 -- Use the reduced character base as the alpha mask. Because the shader works
