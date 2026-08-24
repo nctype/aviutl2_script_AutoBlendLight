@@ -1,4 +1,4 @@
---information:AutoBlendLight v1.2.0
+--information:AutoBlendLight v1.3.0
 --label:AutoBlendLight
 --require:2003700
 
@@ -9,6 +9,7 @@
 --group:ライティング,true
 --select@color_mode:カラーモード,単色=0,2色（左右）=1
 --select@light_style:スタイル,グラデーション=0,縁取り=1
+--check@backlight_mode:逆光,1
 --track@light_strength:強さ,0,200,100,1
 --track@light_diffusion:拡散,0,200,25,1
 --track@light_ratio:偏り,-100,100,-90,1
@@ -98,6 +99,33 @@ float4 backlight_env_framebuffer(float4 pos : SV_Position, float2 uv : TEXCOORD)
     float3 outRGB = baseRGB * lerp(float3(1.0, 1.0, 1.0), bgRGB, strength);
 
     return float4(saturate(outRGB) * base.a, base.a);
+}
+]]
+
+--[[pixelshader@backlight_proxy_resize:
+Texture2D src_tex : register(t0);
+SamplerState smp  : register(s0);
+
+cbuffer constant0 : register(b0) {
+    float4 c0; // sourceW, sourceH, canvasW, canvasH
+    float4 c1; // sourceOffsetX, sourceOffsetY, reserved, reserved
+};
+
+float4 backlight_proxy_resize(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float2 sourceSize = max(c0.xy, float2(1.0, 1.0));
+    float2 canvasSize = max(c0.zw, float2(1.0, 1.0));
+
+    // uv describes the rebuilt pre-clipping canvas.
+    float2 canvasPos = uv * canvasSize;
+    float2 srcPos = canvasPos - c1.xy;
+
+    if (srcPos.x < 0.0 || srcPos.y < 0.0 ||
+        srcPos.x >= sourceSize.x || srcPos.y >= sourceSize.y) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+
+    float2 srcUV = (srcPos + 0.5) / sourceSize;
+    return src_tex.Sample(smp, saturate(srcUV));
 }
 ]]
 
@@ -390,6 +418,71 @@ end
 
 local has_background = obj.copybuffer("cache:aul2_backlight_bg", "framebuffer")
 
+-- AviUtl2 skips filter effects placed after a script once that script uses
+-- obj.draw(). AutoBlendLight draws multiple layers manually, so execute all
+-- following effects explicitly before building our lighting result.
+--
+-- The clean framebuffer background has already been cached above, therefore
+-- downstream object effects (including clipping) do not contaminate the
+-- background used for color/brightness pickup.
+obj.effect()
+
+-- Effects such as クリッピング can change the actual object buffer size and
+-- center offsets. Refresh the working dimensions after executing them so the
+-- large-image proxy path is built from the processed object rather than the
+-- pre-effect dimensions.
+src_w = obj.w
+src_h = obj.h
+if src_w <= 0 or src_h <= 0 then
+    return
+end
+
+-- Read standard クリッピング values from the current object.
+--
+-- Native clipping shrinks the image buffer, but its coordinate origin can
+-- still refer to the pre-clipping image. AutoBlendLight previously built the
+-- large-image proxy from the shrunken rectangle only. Once the lighting range
+-- crossed that smaller rectangle, the native Mask/Light chain could disappear.
+--
+-- Rebuild a transparent pre-clipping canvas around the processed image so the
+-- light area keeps the same coordinate space even after large crops.
+local function safe_effect_value(effect_name, item_name)
+    local ok, value = pcall(obj.getvalue, effect_name, item_name)
+    if ok and type(value) == "number" then
+        return value
+    end
+    return nil
+end
+
+local clip_top = 0
+local clip_bottom = 0
+local clip_left = 0
+local clip_right = 0
+local found_indexed_clip = false
+
+for i = 0, 7 do
+    local effect_name = "クリッピング:" .. tostring(i)
+    local u = safe_effect_value(effect_name, "上")
+    local d = safe_effect_value(effect_name, "下")
+    local l = safe_effect_value(effect_name, "左")
+    local r = safe_effect_value(effect_name, "右")
+
+    if u ~= nil or d ~= nil or l ~= nil or r ~= nil then
+        found_indexed_clip = true
+        clip_top = clip_top + math.max(tonumber(u) or 0, 0)
+        clip_bottom = clip_bottom + math.max(tonumber(d) or 0, 0)
+        clip_left = clip_left + math.max(tonumber(l) or 0, 0)
+        clip_right = clip_right + math.max(tonumber(r) or 0, 0)
+    end
+end
+
+if not found_indexed_clip then
+    clip_top = math.max(safe_effect_value("クリッピング", "上") or 0, 0)
+    clip_bottom = math.max(safe_effect_value("クリッピング", "下") or 0, 0)
+    clip_left = math.max(safe_effect_value("クリッピング", "左") or 0, 0)
+    clip_right = math.max(safe_effect_value("クリッピング", "右") or 0, 0)
+end
+
 -- Compose the output item's base transform with the script/effect-relative transform.
 -- AviUtl2 SDK: obj.ox/obj.sx/... are relative to the image output item's parameters.
 -- Position/rotation/center are additive, scale is multiplicative.
@@ -616,6 +709,8 @@ end
 
 local mode = tonumber(color_mode) or 0
 local style_mode = tonumber(light_style) or 0
+local backlight_enabled =
+    backlight_mode == 1 or backlight_mode == true
 local brightness_link_enabled =
     brightness_link == 1 or brightness_link == true
 mode = math.floor(clamp(mode, 0, 1))
@@ -844,16 +939,65 @@ end
 -- preventing the Light / cache chain from exhausting VRAM.
 -- -------------------------------------------------------------------------
 
-local source_pixels = src_w * src_h
+-- Reconstruct the image rectangle before standard clipping.
+local unclipped_w = math.max(src_w + clip_left + clip_right, src_w)
+local unclipped_h = math.max(src_h + clip_top + clip_bottom, src_h)
+
+-- Make sure the entire user-visible lighting area also fits inside the proxy
+-- canvas. This prevents the native Mask effect from falling outside a heavily
+-- cropped object buffer.
+local mask_radius = math.max(mask_size, 0) * 0.5
+local mask_radius_x = mask_radius
+local mask_radius_y = mask_radius
+local canvas_aspect = clamp(mask_aspect, -100, 100) / 100
+
+if canvas_aspect >= 0 then
+    mask_radius_y = mask_radius_y * (1 - canvas_aspect)
+else
+    mask_radius_x = mask_radius_x * (1 + canvas_aspect)
+end
+
+local mask_r = mask_rotation * pi / 180
+local mask_cos = math.cos(mask_r)
+local mask_sin = math.sin(mask_r)
+local mask_extent_x =
+    math.abs(mask_cos) * mask_radius_x +
+    math.abs(mask_sin) * mask_radius_y +
+    math.max(mask_blur, 0)
+local mask_extent_y =
+    math.abs(mask_sin) * mask_radius_x +
+    math.abs(mask_cos) * mask_radius_y +
+    math.max(mask_blur, 0)
+
+local canvas_half_w = math.max(
+    unclipped_w * 0.5,
+    math.abs(effective_mask_x) + mask_extent_x
+)
+local canvas_half_h = math.max(
+    unclipped_h * 0.5,
+    math.abs(effective_mask_y) + mask_extent_y
+)
+
+local canvas_w = math.max(1, math.ceil(canvas_half_w * 2))
+local canvas_h = math.max(1, math.ceil(canvas_half_h * 2))
+
+-- Extra expansion needed only for the lighting area is symmetric around the
+-- pre-clipping center. Standard clipping margins are then added inside it.
+local extra_pad_x = (canvas_w - unclipped_w) * 0.5
+local extra_pad_y = (canvas_h - unclipped_h) * 0.5
+local source_offset_x = extra_pad_x + clip_left
+local source_offset_y = extra_pad_y + clip_top
+
+local source_pixels = canvas_w * canvas_h
 local max_work_dimension = 3072
 local max_work_pixels = 6000000
 
 local work_scale = 1.0
-if src_w > max_work_dimension then
-    work_scale = math.min(work_scale, max_work_dimension / src_w)
+if canvas_w > max_work_dimension then
+    work_scale = math.min(work_scale, max_work_dimension / canvas_w)
 end
-if src_h > max_work_dimension then
-    work_scale = math.min(work_scale, max_work_dimension / src_h)
+if canvas_h > max_work_dimension then
+    work_scale = math.min(work_scale, max_work_dimension / canvas_h)
 end
 if source_pixels > max_work_pixels then
     work_scale = math.min(work_scale, math.sqrt(max_work_pixels / source_pixels))
@@ -864,8 +1008,8 @@ if work_scale > 0.995 then
     work_scale = 1.0
 end
 
-local work_w = math.max(1, math.floor(src_w * work_scale + 0.5))
-local work_h = math.max(1, math.floor(src_h * work_scale + 0.5))
+local work_w = math.max(1, math.floor(canvas_w * work_scale + 0.5))
+local work_h = math.max(1, math.floor(canvas_h * work_scale + 0.5))
 local work_inv_scale = 1.0 / work_scale
 
 -- L2 + L3: brightness is applied to the original full-resolution character.
@@ -876,13 +1020,43 @@ obj.setoption("blend", "none")
 obj.draw()
 
 -- Build a reduced working copy only when the source is unusually large.
--- drawtarget=tempbuffer ignores the object's normal transform, so a relative
--- zoom is enough to generate an aligned proxy.
-if work_scale < 1.0 then
-    obj.setoption("drawtarget", "tempbuffer", work_w, work_h)
-    obj.setoption("blend", "none")
-    obj.draw(0, 0, 0, work_scale)
-    obj.setoption("drawtarget", "framebuffer")
+--
+-- Do NOT resize it with obj.draw() into tempbuffer. Filters such as
+-- クリッピング can change the object's image rectangle/origin, while tempbuffer
+-- drawing ignores the object's normal transform. On very large artwork that
+-- mismatch can move the lighting proxy away from the processed image and make
+-- the lighting appear to disappear.
+--
+-- Instead, resize the current processed object buffer directly with a pixel
+-- shader. UV 0..1 maps the complete post-effect image to the reduced buffer, so
+-- clipping and other size-changing effects remain aligned.
+local needs_proxy_canvas =
+    work_scale < 1.0 or
+    canvas_w ~= src_w or
+    canvas_h ~= src_h or
+    math.abs(source_offset_x) > 0.0001 or
+    math.abs(source_offset_y) > 0.0001
+
+if needs_proxy_canvas then
+    obj.clearbuffer("tempbuffer", work_w, work_h)
+    obj.pixelshader(
+        "backlight_proxy_resize",
+        "tempbuffer",
+        "object",
+        {
+            src_w,
+            src_h,
+            canvas_w,
+            canvas_h,
+
+            source_offset_x,
+            source_offset_y,
+            0,
+            0
+        },
+        "copy",
+        "clamp"
+    )
     obj.copybuffer("object", "tempbuffer")
 end
 
@@ -928,7 +1102,7 @@ local function apply_light(color, light_factor)
         "強さ", effective_strength,
         "拡散", work_diffusion,
         "比率", light_ratio,
-        "逆光", 1,
+        "逆光", backlight_enabled and 1 or 0,
         "color", color_value(color)
     )
 end
