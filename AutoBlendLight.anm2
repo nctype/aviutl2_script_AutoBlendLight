@@ -1,4 +1,4 @@
---information:AutoBlendLight v1.3.0
+--information:AutoBlendLight v1.3.1
 --label:AutoBlendLight
 --require:2003700
 
@@ -39,48 +39,26 @@
 
 --[[pixelshader@backlight_env_framebuffer:
 Texture2D frame_tex : register(t0);
-Texture2D char_tex  : register(t1);
+Texture2D mask_tex  : register(t1);
 Texture2D bg_tex    : register(t2);
 SamplerState smp    : register(s0);
 
 cbuffer constant0 : register(b0) {
-    float4 c0; // screenW, screenH, objectW, objectH
-    float4 c1; // screenCenterX, screenCenterY, scaleX, scaleY
-    float4 c2; // cosR, sinR, centerX, centerY
-    float4 c3; // multiplyOpacity, reserved, reserved, reserved
+    float4 c0; // multiplyOpacity, reserved, reserved, reserved
 };
 
 float4 backlight_env_framebuffer(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
     float4 base = frame_tex.Sample(smp, uv);
-    float opacity = saturate(c3.x);
+    float opacity = saturate(c0.x);
+
     if (opacity <= 0.00001 || base.a <= 0.00001) {
         return base;
     }
 
-    // Screen -> object inverse transform.
-    float2 screenPos = uv * c0.xy;
-    float2 d = screenPos - c1.xy;
-
-    float2 invRot = float2(
-        d.x * c2.x + d.y * c2.y,
-       -d.x * c2.y + d.y * c2.x
-    );
-
-    if (abs(c1.z) <= 0.00001 || abs(c1.w) <= 0.00001) {
-        return base;
-    }
-
-    float2 localPos = float2(invRot.x / c1.z, invRot.y / c1.w);
-    float2 objUV = float2(
-        (localPos.x + c2.z) / c0.z + 0.5,
-        (localPos.y + c2.w) / c0.w + 0.5
-    );
-
-    if (objUV.x < 0.0 || objUV.x > 1.0 || objUV.y < 0.0 || objUV.y > 1.0) {
-        return base;
-    }
-
-    float4 mask = char_tex.Sample(smp, objUV);
+    // The mask is already rendered in framebuffer/screen space by obj.draw().
+    // This means X/Y/Z, Center X/Y/Z, rotations, scale and camera projection
+    // are all handled by AviUtl2 itself instead of being reconstructed here.
+    float4 mask = mask_tex.Sample(smp, uv);
     if (mask.a <= 0.00001) {
         return base;
     }
@@ -93,12 +71,11 @@ float4 backlight_env_framebuffer(float4 pos : SV_Position, float2 uv : TEXCOORD)
         bgRGB = saturate(bg.rgb / bg.a);
     }
 
-    // Reproduce: blurred background layer -> clipped by character -> Multiply.
-    // Environment Blend is the Multiply strength: 0 = off, 1 = full.
-    float strength = opacity * saturate(mask.a);
-    float3 outRGB = baseRGB * lerp(float3(1.0, 1.0, 1.0), bgRGB, strength);
+    float amount = opacity * saturate(mask.a);
+    float3 multiplied = baseRGB * bgRGB;
+    float3 outRGB = lerp(baseRGB, multiplied, amount);
 
-    return float4(saturate(outRGB) * base.a, base.a);
+    return float4(outRGB * base.a, base.a);
 }
 ]]
 
@@ -1267,9 +1244,15 @@ if work_scale < 1.0 then
 end
 
 -- L8-L10 environment Multiply.
--- Use the reduced character base as the alpha mask. Because the shader works
--- in framebuffer space, this costs only screen-sized buffers regardless of
--- whether the source artwork is 1700x4500, 4000x4000, or larger.
+--
+-- Previous versions reconstructed the object's screen position inside the
+-- framebuffer shader from X/Y, scale, rotation and Center X/Y. That worked in
+-- 2D, but Z and Center Z are perspective-dependent, so the environment blend
+-- could remain at the old depth while the object itself moved in Z.
+--
+-- Build the alpha mask in framebuffer space with obj.draw() instead. AviUtl2
+-- then applies the exact same object transform and camera projection to this
+-- mask as it does to the object, including Z and Center Z.
 if has_background and env_blend > 0 then
     local multiply_opacity = clamp(env_blend / 100, 0, 1)
 
@@ -1279,29 +1262,52 @@ if has_background and env_blend > 0 then
     )
 
     if has_pre_env then
-        -- The proxy is drawn enlarged by work_inv_scale, therefore one proxy
-        -- pixel corresponds to work_inv_scale original-image pixels on screen.
-        local env_scale_x = scale_x * work_inv_scale
-        local env_scale_y = scale_y * work_inv_scale
-        local env_center_x = center_x * work_scale
-        local env_center_y = center_y * work_scale
+        -- Rebuild only the object's alpha mask in screen space.
+        obj.copybuffer("object", "cache:autobacklight_workbase")
 
-        obj.pixelshader(
-            "backlight_env_framebuffer",
-            "framebuffer",
-            {
-                "cache:autobacklight_pre_env",
-                "cache:autobacklight_workbase",
-                "cache:aul2_backlight_bgblur"
-            },
-            {
-                screen_w, screen_h, actual_work_w, actual_work_h,
-                screen_center_x, screen_center_y, env_scale_x, env_scale_y,
-                cos_r, sin_r, env_center_x, env_center_y,
-                multiply_opacity, 0, 0, 0
-            },
-            "copy",
-            "clamp"
+        local env_saved_cx = obj.cx or 0
+        local env_saved_cy = obj.cy or 0
+        local env_saved_cz = obj.cz or 0
+
+        if work_scale < 1.0 then
+            obj.cx = env_saved_cx + center_x * (work_scale - 1.0)
+            obj.cy = env_saved_cy + center_y * (work_scale - 1.0)
+            obj.cz = env_saved_cz + center_z * (work_scale - 1.0)
+        end
+
+        obj.clearbuffer("framebuffer")
+        obj.setoption("blend", "none")
+        obj.draw(0, 0, 0, work_inv_scale)
+        local has_env_mask = obj.copybuffer(
+            "cache:autobacklight_envmask",
+            "framebuffer"
         )
+
+        if work_scale < 1.0 then
+            obj.cx = env_saved_cx
+            obj.cy = env_saved_cy
+            obj.cz = env_saved_cz
+        end
+
+        -- Restore the already-composited object + lighting before applying
+        -- the environment multiply.
+        obj.copybuffer("framebuffer", "cache:autobacklight_pre_env")
+
+        if has_env_mask then
+            obj.pixelshader(
+                "backlight_env_framebuffer",
+                "framebuffer",
+                {
+                    "cache:autobacklight_pre_env",
+                    "cache:autobacklight_envmask",
+                    "cache:aul2_backlight_bgblur"
+                },
+                {
+                    multiply_opacity, 0, 0, 0
+                },
+                "copy",
+                "clamp"
+            )
+        end
     end
 end
