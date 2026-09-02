@@ -2,12 +2,10 @@
 
 <img width="1920" height="1080" alt="Image" src="https://github.com/user-attachments/assets/11d768d5-6eb6-4dbd-b6a4-87a476d906fb" />
 
-▲ ▼ **クリックして動画を再生**
-
-▶️ [紹介動画(ニコニコ)](https://www.nicovideo.jp/watch/sm46673305)
-
 <details open>
 <summary><strong>日本語　▲ 🌐 Switch Language</strong></summary>
+
+▶️ [紹介動画(ニコニコ)](https://www.nicovideo.jp/watch/sm46673305)
 
 ## 概要
 
