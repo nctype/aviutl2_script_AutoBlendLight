@@ -2,169 +2,259 @@
 
 <img width="1920" height="1080" alt="Image" src="https://github.com/user-attachments/assets/11d768d5-6eb6-4dbd-b6a4-87a476d906fb" />
 
-下の言語をクリックすると説明を展開できます。  
-点击下面的语言即可展开说明。  
-Click a language below to expand the documentation.
+▲ ▼ **クリックして動画を再生**
 
-<details>
-<summary><strong>日本語 - クリックして表示</strong></summary>
+▶️ [紹介動画(ニコニコ)](https://www.nicovideo.jp/watch/sm46673305)
+
+<details open>
+<summary><strong>日本語　▲ 🌐 Switch Language</strong></summary>
 
 ## 概要
 
-**AutoBlendLight** は、AviUtl2 用の自動背景なじませスクリプトです。  
-主に立ち絵や、背景の光に合わせて馴染ませたいオブジェクトを想定しています。
+**AutoBlendLight** は、AviUtl2 上のオブジェクトを背景の光や色になじませるためのスクリプトです。  
+主に立ち絵など、背景と明るさや色味が合わないオブジェクトを自然に馴染ませる用途を想定しています。
 
-使用者が設定したライティング範囲の中心から、背景の色と明るさをリアルタイムで取得し、ライティングと背景になじませる処理を自動で行います。  
-光源の明滅にも連動できます。
+指定したライティング範囲の中心から背景の色と明るさを取得し、その情報をもとにライティングを自動生成します。  
+背景側の明るさが変化した場合は、ライティングの強さも連動させることができます。
+
+単色と左右2色のカラーモード、グラデーションと縁取りの2種類のスタイル、通常の「ライト」と逆光の切り替えに対応しています。  
+また、背景をオブジェクトへ乗算してなじませる **環境なじませ** と、画面上に光源位置を固定する **固定光源モード** も使用できます。
+
+AutoBlendLight は、AviUtl2 の **アニメーション効果** から選択できます。
 
 ## インストール方法
 
-1. GitHub のリポジトリページ右側にある **Releases** から最新バージョンを開きます。
-2. **Assets** から `AutoBlendLight_vX.X.X.au2pkg.zip` をダウンロードします。
-3. ダウンロードした `.au2pkg.zip` を **解凍せずに、そのまま AviUtl2 のプレビュー画面へドラッグ＆ドロップ**します。
-4. インストール確認後、AviUtl2 が再起動すれば完了です。
+1. `AutoBlendLight_vx.x.x.au2pkg.zip` を解凍せず、AviUtl2 のプレビュー画面へ直接ドラッグ＆ドロップします。
+2. 表示された内容を確認してインストールします。
+3. 対象のオブジェクトへアニメーション効果を追加し、一覧から `AutoBlendLight` を選択します。
 
-スクリプト本体と英語・中国語の言語ファイルはまとめてインストールされます。  
-AviUtl2 の言語設定に合わせて AutoBlendLight の表示言語も切り替わります。
-
-### パッケージ内容
-
-- `AutoBlendLight.anm2`：スクリプト本体（日本語）
-- `English.AutoBlendLight.aul2`：英語表示用
-- `简体中文.AutoBlendLight.aul2`：簡体字中国語表示用
+パッケージにはスクリプト本体と、英語・簡体中国語表示用の言語ファイルが含まれています。  
+表示言語は AviUtl2 の言語設定に合わせて自動的に切り替わります。
 
 ## 基本操作
+
+AutoBlendLight は、背景がすでに描画されている状態で使用してください。  
+スクリプトは現在の背景を読み取り、ライティング用の色と明るさを取得します。
 
 ### オブジェクト
 
-元のオブジェクトの明るさを調整し、ライティングや背景になじませる処理を加える前の状態を整えます。
+対象オブジェクト側の明るさを調整します。  
+背景との明暗差が大きい場合に、ライティングを適用する前の基礎的な明るさを整えるために使用します。
 
 ### ライティング
 
-設定した範囲の中心から取得した背景色と明るさをもとに、オブジェクトへ光を加えます。  
-柔らかいグラデーションと、輪郭をはっきり見せる縁取りの2種類を選べます。  
-背景の明るさに連動させることで、点滅するランプなどの光も反映できます。
+背景から取得した色を使ってオブジェクトへライティングを追加します。
+
+**カラーモード** では、単色または左右2色を選択できます。  
+2色モードでは、ライティング範囲の左右から取得した色を使って、左右で異なる光を合成します。
+
+**スタイル** では、柔らかく広がる **グラデーション** と、輪郭付近へ光を出す **縁取り** を切り替えられます。
+
+グラデーションでは **逆光** のON/OFFを切り替えられます。  
+ONでは逆光、OFFでは通常の AviUtl2「ライト」として動作します。
+
+**明るさ連動** を有効にすると、ライティング範囲内の背景の明るさに合わせて光の強さが変化します。  
+点滅する照明や、明るさが変化する背景にも追従できます。
 
 ### ライティング範囲
 
-背景の色と明るさを取得する位置と、ライティングを適用する範囲を指定します。  
-中心と範囲はプレビュー上で直接操作できます。
+背景から色と明るさを取得し、ライティングを適用する範囲を設定します。
 
-### 背景なじませ
+X / Y、サイズ、角度、縦横比、縁ぼかしを調整できます。  
+プレビュー上の中心アンカーをドラッグして、ライティング範囲の位置を移動できます。
 
-現在の背景をぼかしてオブジェクトへ馴染ませ、立ち絵などが背景から浮いて見えるのを抑えます。
+背景の光源がある位置へ中心を合わせると、取得する色と明るさを調整しやすくなります。
+
+### 環境なじませ
+
+背景をぼかしてオブジェクトへ乗算し、背景の色味をオブジェクトへなじませます。
+
+ライティングとは別の処理なので、逆光を弱くした状態でも背景との色の差を抑える用途に使用できます。  
+背景ぼかしを調整すると、細かい背景模様の影響を抑えながら全体の色味だけを反映できます。
 
 ### 固定光源
 
-ライティング範囲をオブジェクトに追従させず、画面上の固定位置に置くための機能です。  
-窓、街灯、ランプ、モニターなど、位置が動かない光源を表現するときに使用します。
+通常はライティング範囲がオブジェクトと一緒に移動します。
+
+**固定光源モード** を有効にすると、ライティング範囲の中心を画面側へ固定できます。  
+オブジェクトが移動して光源の近くへ入ったり、光源から離れたりするような場面で使用できます。
+
+## 注意事項
+
+- 背景の色と明るさを読み取るため、AutoBlendLight を使用する時点で背景が描画されている必要があります。
+- 大きな画像では、GPU負荷と画像バッファ使用量を抑えるために内部処理を軽量化する場合があります。
+- 大きな画像とクリッピング、左右2色モードの併用に対応しています。
+- AutoBlendLight より下に配置した「ぼかし」「色調補正」などの効果も使用できます。
+- 固定光源モードでは、光源位置とオブジェクト位置を別々に扱います。
 
 </details>
 
 <details>
-<summary><strong>中文 - 点击查看</strong></summary>
+<summary><strong>中文</strong></summary>
+
+▶️ [介绍视频(bilibili)](www.bilibili.com/video/BV1mHgc6VEBb)
 
 ## 概要
 
-**AutoBlendLight** 是用于 AviUtl2 的自动融图脚本，主要面向立绘以及其他需要与背景光照融合的对象。  
+**AutoBlendLight** 是用于让 AviUtl2 中的对象更自然地融入背景光照和色彩的脚本。  
+主要适合立绘等与背景亮度、颜色差异较大的对象。
 
-脚本会从使用者设定的光照范围中心实时取得背景的颜色和亮度，并自动生成光照与背景融合效果。  
-还可以联动光源的闪烁。
+脚本会从指定光照区域的中心读取背景颜色和亮度，并根据这些信息自动生成光照效果。  
+当背景亮度发生变化时，也可以让光照强度跟随变化。
+
+支持单色与左右双色模式、渐变与描边两种光照样式，并可在普通「ライト」与逆光之间切换。  
+此外还提供将背景颜色乘算到对象上的 **背景融合**，以及将光源位置固定在画面中的 **固定光源模式**。
+
+AutoBlendLight 可以从 AviUtl2 的 **动画效果（アニメーション効果）** 中选择。
 
 ## 安装方法
 
-1. 在 GitHub 仓库页面右侧找到 **Releases**，进入最新版本。
-2. 在 **Assets** 中下载 `AutoBlendLight_vX.X.X.au2pkg.zip`。
-3. **不要解压**，直接将下载好的 `.au2pkg.zip` 拖入 AviUtl2 的预览画面。
-4. 确认安装后，AviUtl2 会自动重启，重启完成即可使用。
+1. 不要解压 `AutoBlendLight_vx.x.x.au2pkg.zip`，直接将其拖放到 AviUtl2 的预览画面。
+2. 确认显示的内容后进行安装。
+3. 给需要处理的对象添加动画效果，然后从列表中选择 `AutoBlendLight`。
 
-脚本本体以及英语、简体中文语言文件会一起安装。  
-AutoBlendLight 的界面语言会跟随 AviUtl2 的语言设置自动切换。
-
-### 包含文件
-
-- `AutoBlendLight.anm2`：脚本本体（日语）
-- `English.AutoBlendLight.aul2`：英语界面
-- `简体中文.AutoBlendLight.aul2`：简体中文界面
+安装包包含脚本本体，以及英文和简体中文界面所需的语言文件。  
+显示语言会根据 AviUtl2 的语言设置自动切换。
 
 ## 基本操作
 
+请在背景已经绘制完成的情况下使用 AutoBlendLight。  
+脚本会读取当前背景，并取得生成光照所需的颜色和亮度。
+
 ### 对象
 
-调整原对象本身的亮度，为后续的光照与背景融合做好基础调整。
+调整对象本身的基础亮度。  
+当对象与背景之间的明暗差距较大时，可以先在这里调整，再进行后续光照处理。
 
 ### 光照
 
-根据光照范围中心取得的背景颜色和亮度，为对象自动添加光照。  
-可以在柔和的渐变效果与轮廓较明确的描边效果之间切换。  
-还可以根据背景亮度实时改变光照强度，从而反映闪烁台灯、屏幕、霓虹灯等光源变化。
+使用从背景取得的颜色为对象添加光照。
+
+**颜色模式** 可以选择单色或左右双色。  
+双色模式会分别取得光照区域左右两侧的颜色，再将两种光照进行合成。
+
+**样式** 可以在柔和扩散的 **渐变** 与强调轮廓的 **描边** 之间切换。
+
+在渐变模式下可以切换 **逆光**。  
+开启时使用逆光，关闭后则使用普通的 AviUtl2「ライト」。
+
+开启 **亮度联动** 后，光照强度会根据光照区域内的背景亮度变化。  
+因此也可以跟随闪烁灯光、显示器亮度变化等动态光源。
 
 ### 光照区域
 
-指定从哪里取得背景颜色和亮度，同时决定光照的作用范围。  
-中心位置和范围都可以直接在预览画面中操作。
+设置读取背景颜色和亮度、以及应用光照的范围。
+
+可以调整 X / Y、尺寸、角度、纵横比和边缘模糊。  
+也可以直接拖动预览画面中的中心锚点来移动光照区域。
+
+将区域中心放在背景中的光源附近，通常更容易得到合适的颜色和亮度。
 
 ### 背景融合
 
-将当前背景进行模糊后融合到对象中，让立绘或其他对象更自然地融入背景，减少与背景之间的割裂感。
+将模糊后的背景以乘算方式应用到对象上，使对象的整体色调更接近背景。
+
+它与光照是独立处理，因此即使不需要很强的逆光，也可以单独用它来减少对象与背景之间的色差。  
+调整背景模糊后，可以减少细小背景纹理的影响，只保留整体环境色。
 
 ### 固定光源
 
-让光照区域不再跟随对象，而是固定在画面中的某个位置。  
-适合窗户、路灯、台灯、显示器等位置固定的光源。
+默认情况下，光照区域会跟随对象一起移动。
+
+开启 **固定光源模式** 后，可以将光照区域中心固定在画面上。  
+适合表现对象移动到光源附近、离开光源，或者穿过固定灯光区域的场景。
+
+## 注意事项
+
+- AutoBlendLight 需要读取背景颜色和亮度，因此使用时背景必须已经完成绘制。
+- 对于超大图片，脚本可能会自动使用较轻量的内部处理来降低 GPU 和图像缓冲区负载。
+- 支持超大图片与裁剪、左右双色模式组合使用。
+- 放在 AutoBlendLight 下方的模糊、色调调整等效果也可以正常使用。
+- 固定光源模式会分别处理光源位置与对象位置。
 
 </details>
 
 <details>
-<summary><strong>English - Click to view</strong></summary>
+<summary><strong>English</strong></summary>
+
+▶️ [Overview video(niconico)](https://www.nicovideo.jp/watch/sm46673305)
 
 ## Overview
 
-**AutoBlendLight** is an automatic blending script for AviUtl2, mainly intended for character illustrations and other objects that need to blend with the lighting of the background.
+**AutoBlendLight** is an AviUtl2 script for making an object blend more naturally with the lighting and color of its background.  
+It is mainly intended for character illustrations and other objects whose brightness or color does not match the scene.
 
-The script samples the background color and brightness in real time from the center of the lighting area set by the user, then automatically generates lighting and background-blending effects.  
-It can also react to flickering light sources.
+The script samples the background color and brightness from the center of the selected Lighting Area, then automatically generates lighting from that information.  
+Lighting strength can also react to changes in background brightness.
+
+It supports Single Color and Dual Color (Left/Right) modes, Gradient and Outline styles, and switching between normal AviUtl2 Light and backlighting.  
+It also includes **Background Blend**, which multiplies a blurred version of the background onto the object, and **Fixed Light Mode**, which keeps the light position fixed on the screen.
+
+AutoBlendLight can be selected from AviUtl2 **Animation Effects (アニメーション効果)**.
 
 ## Installation
 
-1. Open the latest version from **Releases** on the right side of the GitHub repository page.
-2. Download `AutoBlendLight_vX.X.X.au2pkg.zip` from **Assets**.
-3. **Do not extract the ZIP.** Drag and drop the downloaded `.au2pkg.zip` directly onto the AviUtl2 preview window.
-4. Confirm the installation. AviUtl2 will restart automatically, and AutoBlendLight will be ready to use.
+1. Do not extract `AutoBlendLight_vx.x.x.au2pkg.zip`. Drag and drop it directly onto the AviUtl2 preview window.
+2. Review the displayed contents and install the package.
+3. Add an Animation Effect to the target object and select `AutoBlendLight` from the list.
 
-The script and the English / Simplified Chinese language files are installed together.  
-AutoBlendLight automatically follows the language selected in AviUtl2.
-
-### Package Contents
-
-- `AutoBlendLight.anm2` — Script file (Japanese)
-- `English.AutoBlendLight.aul2` — English UI
-- `简体中文.AutoBlendLight.aul2` — Simplified Chinese UI
+The package includes the script and the language files required for English and Simplified Chinese UI text.  
+The displayed language follows the AviUtl2 language setting automatically.
 
 ## Basic Usage
 
+Use AutoBlendLight after the background has already been rendered.  
+The script reads the current background to obtain the color and brightness used for lighting.
+
 ### Object
 
-Adjusts the brightness of the original object before lighting and background blending are applied.
+Adjusts the base brightness of the target object.  
+Use this when the object is much brighter or darker than the background before applying the lighting effect.
 
 ### Lighting
 
-Uses the background color and brightness sampled from the center of the lighting area to add lighting to the object.  
-You can choose between a soft gradient style and a sharper outline style.  
-The lighting strength can also react to background brightness, allowing flickering lamps, screens, neon lights, and similar sources to affect the object.
+Adds lighting to the object using colors sampled from the background.
+
+**Color Mode** can be set to Single Color or Dual Color (Left/Right).  
+Dual Color mode samples the left and right sides of the Lighting Area separately, then combines the two lighting results.
+
+**Style** switches between a soft **Gradient** and an **Outline** style concentrated around the object's edges.
+
+In Gradient mode, the **Backlight** option can be turned on or off.  
+When disabled, AutoBlendLight uses the normal AviUtl2 Light effect instead of backlighting.
+
+When **Brightness Link** is enabled, lighting strength reacts to the brightness inside the Lighting Area.  
+This allows the effect to follow flickering lights, displays, and other changing light sources.
 
 ### Lighting Area
 
-Defines where the background color and brightness are sampled and where the lighting is applied.  
-The center and area can be adjusted directly in the preview.
+Defines the area used to sample background color and brightness and to apply the lighting.
+
+X / Y, Size, Angle, Aspect Ratio, and Edge Blur can be adjusted.  
+The center anchor can also be dragged directly in the preview window.
+
+Placing the center near a visible light source in the background usually makes it easier to obtain suitable color and brightness.
 
 ### Background Blend
 
-Blurs the current background and blends it into the object so character illustrations and other elements feel more naturally integrated with the background.
+Multiplies a blurred copy of the background onto the object so its overall color sits closer to the scene.
+
+Background Blend is processed separately from Lighting, so it can also be used when only a small amount of backlighting is needed.  
+Background Blur can reduce the influence of small background details while retaining the overall environmental color.
 
 ### Fixed Light
 
-Keeps the lighting area fixed in screen space instead of following the object.  
-This is useful for stationary light sources such as windows, street lamps, desk lamps, and monitors.
+By default, the Lighting Area moves together with the object.
+
+When **Fixed Light Mode** is enabled, the center of the Lighting Area can remain fixed on the screen.  
+This is useful for scenes where an object moves toward, away from, or through a stationary light source.
+
+## Notes
+
+- AutoBlendLight samples background color and brightness, so the background must already be rendered when the effect is evaluated.
+- Very large images may use a reduced internal working buffer to lower GPU and image-buffer usage.
+- Large images can be used together with clipping and Dual Color mode.
+- Effects placed below AutoBlendLight, such as Blur or Color Correction, can still be used.
+- Fixed Light Mode treats the light position and object position separately.
 
 </details>
