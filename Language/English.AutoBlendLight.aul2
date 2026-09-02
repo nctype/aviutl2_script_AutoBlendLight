@@ -1,7 +1,3 @@
-;===============================================================
-; Target: AutoBlendLight
-; Language: English
-
 [Language]
 Information=AutoBlendLight English translation
 SubLanguage=English
@@ -10,22 +6,20 @@ SubLanguage=English
 AutoBlendLight=AutoBlendLight
 オブジェクト=Object
 明るさ=Brightness
-
 ライティング=Lighting
 カラーモード=Color Mode
 単色=Single Color
 2色（左右）=Dual Color (Left/Right)
 スタイル=Style
-逆光=Backlight
 グラデーション=Gradient
 縁取り=Outline
+逆光=Backlight
 強さ=Strength
 拡散=Spread
 偏り=Bias
 自然補正=Color Correction
 彩度=Saturation
 明るさ連動=Brightness Link
-
 ライティング範囲=Lighting Area
 種類=Type
 円=Circle
@@ -35,10 +29,8 @@ Y=Y
 縁ぼかし=Edge Blur
 角度=Angle
 縦横比=Aspect Ratio
-
 環境なじませ=Background Blend
 なじませ量=Blend Amount
 背景ぼかし=Background Blur
-
 固定光源=Fixed Light
 固定光源モード=Fixed Light Mode
