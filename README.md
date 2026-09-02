@@ -18,8 +18,6 @@
 単色と左右2色のカラーモード、グラデーションと縁取りの2種類のスタイル、通常の「ライト」と逆光の切り替えに対応しています。  
 また、背景をオブジェクトへ乗算してなじませる **環境なじませ** と、画面上に光源位置を固定する **固定光源モード** も使用できます。
 
-AutoBlendLight は、AviUtl2 の **アニメーション効果** から選択できます。
-
 ## インストール方法
 
 1. `AutoBlendLight_vx.x.x.au2pkg.zip` を解凍せず、AviUtl2 のプレビュー画面へ直接ドラッグ＆ドロップします。
@@ -103,8 +101,6 @@ X / Y、サイズ、角度、縦横比、縁ぼかしを調整できます。
 支持单色与左右双色模式、渐变与描边两种光照样式，并可在普通「ライト」与逆光之间切换。  
 此外还提供将背景颜色乘算到对象上的 **背景融合**，以及将光源位置固定在画面中的 **固定光源模式**。
 
-AutoBlendLight 可以从 AviUtl2 的 **动画效果（アニメーション効果）** 中选择。
-
 ## 安装方法
 
 1. 不要解压 `AutoBlendLight_vx.x.x.au2pkg.zip`，直接将其拖放到 AviUtl2 的预览画面。
@@ -187,8 +183,6 @@ Lighting strength can also react to changes in background brightness.
 
 It supports Single Color and Dual Color (Left/Right) modes, Gradient and Outline styles, and switching between normal AviUtl2 Light and backlighting.  
 It also includes **Background Blend**, which multiplies a blurred version of the background onto the object, and **Fixed Light Mode**, which keeps the light position fixed on the screen.
-
-AutoBlendLight can be selected from AviUtl2 **Animation Effects (アニメーション効果)**.
 
 ## Installation
 
