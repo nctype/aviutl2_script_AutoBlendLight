@@ -1,4 +1,4 @@
---information:AutoBlendLight v1.3.2
+--information:AutoBlendLight v1.3.3
 --label:AutoBlendLight
 --require:2003700
 
@@ -48,7 +48,7 @@ cbuffer constant0 : register(b0) {
 };
 
 float4 backlight_env_framebuffer(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
-    float4 base = frame_tex.Sample(smp, uv);
+    float4 base = frame_tex.Load(int3(int2(pos.xy), 0));
     float opacity = saturate(c0.x);
 
     if (opacity <= 0.00001 || base.a <= 0.00001) {
@@ -58,12 +58,12 @@ float4 backlight_env_framebuffer(float4 pos : SV_Position, float2 uv : TEXCOORD)
     // The mask is already rendered in framebuffer/screen space by obj.draw().
     // This means X/Y/Z, Center X/Y/Z, rotations, scale and camera projection
     // are all handled by AviUtl2 itself instead of being reconstructed here.
-    float4 mask = mask_tex.Sample(smp, uv);
+    float4 mask = mask_tex.Load(int3(int2(pos.xy), 0));
     if (mask.a <= 0.00001) {
         return base;
     }
 
-    float4 bg = bg_tex.Sample(smp, uv);
+    float4 bg = bg_tex.Load(int3(int2(pos.xy), 0));
 
     float3 baseRGB = base.rgb / max(base.a, 0.00001);
     float3 bgRGB = float3(1.0, 1.0, 1.0);
@@ -79,34 +79,55 @@ float4 backlight_env_framebuffer(float4 pos : SV_Position, float2 uv : TEXCOORD)
 }
 ]]
 
---[[pixelshader@backlight_proxy_resize:
-Texture2D src_tex : register(t0);
-SamplerState smp  : register(s0);
+--[[pixelshader@backlight_work_resize:
+Texture2D source_tex : register(t0);
+SamplerState smp : register(s0);
+float4 backlight_work_resize(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    return source_tex.Sample(smp, uv);
+}
+]]
 
+--[[pixelshader@backlight_detail_restore:
+Texture2D sharp_tex : register(t0);
+Texture2D lit_tex : register(t1);
+Texture2D baseline_tex : register(t2);
+float4 backlight_detail_restore(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    int3 p = int3(int2(pos.xy), 0);
+    float4 sharp = sharp_tex.Load(p);
+    float4 lit = lit_tex.Load(p);
+    float4 baseline = baseline_tex.Load(p);
+    // Both proxy draws use the same background, native transform and blend.
+    // Remove the proxy's source contribution before adding the light change.
+    // With neutral light lit == baseline, including at translucent edges.
+    float4 result = sharp + (lit - baseline);
+    return float4(max(result.rgb, 0.0), saturate(result.a));
+}
+]]
+
+--[[pixelshader@backlight_range_composite:
+Texture2D light_tex : register(t0);
+Texture2D base_tex  : register(t1);
+Texture2D mask_tex  : register(t2);
 cbuffer constant0 : register(b0) {
-    float4 c0; // sourceW, sourceH, canvasW, canvasH
-    float4 c1; // sourceOffsetX, sourceOffsetY, reserved, reserved
+    float4 c0; // baseW, baseH, baseOffsetX, baseOffsetY
+    float4 c1; // outlineMode, reserved, reserved, reserved
 };
-
-float4 backlight_proxy_resize(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
-    float2 sourceSize = max(c0.xy, float2(1.0, 1.0));
-    float2 canvasSize = max(c0.zw, float2(1.0, 1.0));
-
-    // uv describes the rebuilt pre-clipping canvas.
-    float2 canvasPos = uv * canvasSize;
-    float2 srcPos = canvasPos - c1.xy;
-
-    if (srcPos.x < 0.0 || srcPos.y < 0.0 ||
-        srcPos.x >= sourceSize.x || srcPos.y >= sourceSize.y) {
-        return float4(0.0, 0.0, 0.0, 0.0);
+float4 backlight_range_composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    int2 pixel = int2(pos.xy);
+    int2 basePixel = pixel - int2(c0.zw);
+    float4 base = float4(0, 0, 0, 0);
+    if (all(basePixel >= 0) && all(basePixel < int2(c0.xy))) {
+        base = base_tex.Load(int3(basePixel, 0));
     }
-
-    // SV/TEXCOORD UV already points at the destination pixel center.
-    // canvasPos/srcPos therefore already represent pixel-center coordinates.
-    // Adding another +0.5 shifts every sample by half a pixel and softens
-    // line art even when no actual downscaling is taking place.
-    float2 srcUV = srcPos / sourceSize;
-    return src_tex.Sample(smp, saturate(srcUV));
+    float4 light = light_tex.Load(int3(pixel, 0));
+    float coverage = saturate(mask_tex.Load(int3(pixel, 0)).a);
+    if (c1.x > 0.5) {
+        float4 rim = light * coverage;
+        return rim + base * (1.0 - rim.a);
+    }
+    // The native Light result already contains the original image. Interpolate
+    // once, in image space, instead of drawing that image over itself again.
+    return lerp(base, light, coverage);
 }
 ]]
 
@@ -120,8 +141,8 @@ cbuffer constant0 : register(b0) {
 };
 
 float4 backlight_dualcolor_mix(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
-    float4 leftColor = left_tex.Sample(smp, uv);
-    float4 rightColor = right_tex.Sample(smp, uv);
+    float4 leftColor = left_tex.Load(int3(int2(pos.xy), 0));
+    float4 rightColor = right_tex.Load(int3(int2(pos.xy), 0));
 
     float transition = saturate(c0.x);
     float halfWidth = lerp(0.02, 0.30, transition);
@@ -408,136 +429,135 @@ local has_background = obj.copybuffer("cache:aul2_backlight_bg", "framebuffer")
 -- background used for color/brightness pickup.
 obj.effect()
 
--- Effects such as clipping can change the actual object buffer size and
--- center offsets. Refresh the working dimensions after executing them so the
--- large-image proxy path is built from the processed object rather than the
--- pre-effect dimensions.
+-- Effects such as clipping can change the image size and center offsets.
+-- Work directly on the processed image without reconstructing a crop canvas.
 src_w = obj.w
 src_h = obj.h
 if src_w <= 0 or src_h <= 0 then
     return
 end
 
--- Read standard clipping values from the current object.
---
--- Native clipping shrinks the image buffer, but its coordinate origin can
--- still refer to the pre-clipping image. AutoBlendLight previously built the
--- large-image proxy from the shrunken rectangle only. Once the lighting range
--- crossed that smaller rectangle, the native Mask/Light chain could disappear.
---
--- Rebuild a transparent pre-clipping canvas around the processed image so the
--- light area keeps the same coordinate space even after large crops.
-local function safe_effect_value(effect_name, item_name)
-    local ok, value = pcall(obj.getvalue, effect_name, item_name)
-    if ok and type(value) == "number" then
-        return value
-    end
-    return nil
-end
-
-local clip_top = 0
-local clip_bottom = 0
-local clip_left = 0
-local clip_right = 0
-local found_indexed_clip = false
-
-for i = 0, 7 do
-    local effect_name = "クリッピング:" .. tostring(i)
-    local u = safe_effect_value(effect_name, "上")
-    local d = safe_effect_value(effect_name, "下")
-    local l = safe_effect_value(effect_name, "左")
-    local r = safe_effect_value(effect_name, "右")
-
-    if u ~= nil or d ~= nil or l ~= nil or r ~= nil then
-        found_indexed_clip = true
-        clip_top = clip_top + math.max(tonumber(u) or 0, 0)
-        clip_bottom = clip_bottom + math.max(tonumber(d) or 0, 0)
-        clip_left = clip_left + math.max(tonumber(l) or 0, 0)
-        clip_right = clip_right + math.max(tonumber(r) or 0, 0)
-    end
-end
-
-if not found_indexed_clip then
-    clip_top = math.max(safe_effect_value("クリッピング", "上") or 0, 0)
-    clip_bottom = math.max(safe_effect_value("クリッピング", "下") or 0, 0)
-    clip_left = math.max(safe_effect_value("クリッピング", "左") or 0, 0)
-    clip_right = math.max(safe_effect_value("クリッピング", "右") or 0, 0)
-end
-
--- Compose the output item's base transform with the script/effect-relative transform.
--- AviUtl2 SDK: obj.ox/obj.sx/... are relative to the image output item's parameters.
--- Position/rotation/center are additive, scale is multiplicative.
-local output_x = obj.getvalue("x") or obj.x or 0
-local output_y = obj.getvalue("y") or obj.y or 0
-local output_sx = obj.getvalue("sx") or 1
-local output_sy = obj.getvalue("sy") or 1
+-- One 3D mapping is shared by pickup, fixed-light inversion and guides.
+-- The final image is still drawn by AviUtl2. This test build's auxiliary
+-- projection needs comparison with native rendering, especially camera/groups.
 local output_cx = obj.getvalue("cx") or 0
 local output_cy = obj.getvalue("cy") or 0
 local output_cz = obj.getvalue("cz") or 0
-local output_rz = obj.getvalue("rz") or 0
-
--- Preserve the original relative-center transform. Native Light / Outline and
--- the dual-color mixing path can change the current object image rectangle.
--- On a reduced 4K proxy that can also change the current obj.cx/obj.cy state,
--- which must NOT be reused later when drawing the environment-blend mask.
 local source_relative_cx = obj.cx or 0
 local source_relative_cy = obj.cy or 0
 local source_relative_cz = obj.cz or 0
-
-local base_x = output_x + (obj.ox or 0)
-local base_y = output_y + (obj.oy or 0)
-local scale_x = output_sx * (obj.sx or 1)
-local scale_y = output_sy * (obj.sy or 1)
 local center_x = output_cx + source_relative_cx
 local center_y = output_cy + source_relative_cy
 local center_z = output_cz + source_relative_cz
-local rz = (output_rz + (obj.rz or 0)) * pi / 180
-local cos_r = math.cos(rz)
-local sin_r = math.sin(rz)
-local screen_center_x = screen_w * 0.5 + base_x
-local screen_center_y = screen_h * 0.5 + base_y
+local base_x = (obj.getvalue("x") or obj.x or 0) + (obj.ox or 0)
+local base_y = (obj.getvalue("y") or obj.y or 0) + (obj.oy or 0)
+local base_z = (obj.getvalue("z") or obj.z or 0) + (obj.oz or 0)
+local scale_x = (obj.getvalue("sx") or 1) * (obj.sx or 1)
+local scale_y = (obj.getvalue("sy") or 1) * (obj.sy or 1)
+local scale_z = (obj.getvalue("sz") or 1) * (obj.sz or 1)
+local rx = ((obj.getvalue("rx") or 0) + (obj.rx or 0)) * pi / 180
+local ry = ((obj.getvalue("ry") or 0) + (obj.ry or 0)) * pi / 180
+local rz = ((obj.getvalue("rz") or 0) + (obj.rz or 0)) * pi / 180
+local cxr, sxr = math.cos(rx), math.sin(rx)
+local cyr, syr = math.cos(ry), math.sin(ry)
+local czr, szr = math.cos(rz), math.sin(rz)
+local function rotate(x,y,z)
+    y,z = y*cxr-z*sxr, y*sxr+z*cxr
+    x,z = x*cyr+z*syr, -x*syr+z*cyr
+    return x*czr-y*szr, x*szr+y*czr, z
+end
+local function unrotate(x,y,z)
+    x,y = x*czr+y*szr, -x*szr+y*czr
+    x,z = x*cyr-z*syr, x*syr+z*cyr
+    return x, y*cxr+z*sxr, -y*sxr+z*cxr
+end
+local function normalize(x,y,z)
+    local n=math.sqrt(x*x+y*y+z*z)
+    if n<1e-10 then return nil end
+    return x/n,y/n,z/n
+end
 
--- Preview guide and coordinate handling for the lighting mask.
---
--- Normal mode:
---   mask_x / mask_y are object-local coordinates, therefore the mask follows
---   the character.
---
--- Fixed-light mode:
---   mask_x / mask_y are screen-space coordinates (same coordinate system as
---   the object's standard X/Y output), therefore the light stays fixed while
---   the character moves through it.
+local camera = obj.getoption("camera_param")
+local camera_mode = tonumber(obj.getoption("camera_mode")) or 0
+local eye_x,eye_y,eye_z = 0,0,0
+local right_x,right_y,right_z = 1,0,0
+local down_x,down_y,down_z = 0,1,0
+local forward_x,forward_y,forward_z = 0,0,1
+local focal = type(camera)=="table" and tonumber(camera.d) or nil
+if focal and focal>0 then
+    eye_z=-focal
+    if camera_mode>0 then
+        eye_x,eye_y,eye_z=camera.x,camera.y,camera.z
+        local fx,fy,fz=normalize(camera.tx-eye_x,camera.ty-eye_y,camera.tz-eye_z)
+        if fx then
+            local ux,uy,uz=camera.ux or 0,camera.uy or -1,camera.uz or 0
+            local ax,ay,az=normalize(fy*uz-fz*uy,fz*ux-fx*uz,fx*uy-fy*ux)
+            if ax then
+                forward_x,forward_y,forward_z=fx,fy,fz
+                local dx,dy,dz=fy*az-fz*ay,fz*ax-fx*az,fx*ay-fy*ax
+                local roll=(camera.rz or 0)*pi/180
+                local c,t=math.cos(roll),math.sin(roll)
+                right_x,right_y,right_z=ax*c+dx*t,ay*c+dy*t,az*c+dz*t
+                down_x,down_y,down_z=dx*c-ax*t,dy*c-ay*t,dz*c-az*t
+            end
+        end
+    end
+else
+    focal=nil -- No undocumented focal-distance constant when unavailable.
+end
+
+local function object_local_to_screen_relative(local_x,local_y)
+    local x,y,z=rotate((local_x-center_x)*scale_x,
+        (local_y-center_y)*scale_y,-center_z*scale_z)
+    x,y,z=x+base_x-eye_x,y+base_y-eye_y,z+base_z-eye_z
+    local px=x*right_x+y*right_y+z*right_z
+    local py=x*down_x+y*down_y+z*down_z
+    if focal then
+        local depth=x*forward_x+y*forward_y+z*forward_z
+        if depth<=1e-6 then return nil end
+        return px*focal/depth,py*focal/depth
+    end
+    return px,py
+end
+
+local function screen_relative_to_object_local(rel_x,rel_y)
+    if math.abs(scale_x)<1e-9 or math.abs(scale_y)<1e-9 then return nil end
+    local ox,oy,oz=eye_x,eye_y,eye_z
+    local dx,dy,dz=forward_x,forward_y,forward_z
+    if focal then
+        dx=dx+right_x*rel_x/focal+down_x*rel_y/focal
+        dy=dy+right_y*rel_x/focal+down_y*rel_y/focal
+        dz=dz+right_z*rel_x/focal+down_z*rel_y/focal
+    else
+        ox,oy,oz=ox+right_x*rel_x+down_x*rel_y,
+            oy+right_y*rel_x+down_y*rel_y,oz+right_z*rel_x+down_z*rel_y
+    end
+    ox,oy,oz=unrotate(ox-base_x,oy-base_y,oz-base_z)
+    dx,dy,dz=unrotate(dx,dy,dz)
+    if math.abs(dz)<1e-9 then return nil end
+    local distance=(-center_z*scale_z-oz)/dz
+    if focal and distance<=0 then return nil end
+    return (ox+distance*dx)/scale_x+center_x,
+        (oy+distance*dy)/scale_y+center_y
+end
+
 local fixed_enabled = fixed_light == 1 or fixed_light == true
 local current_mask_type = mask_type
-if current_mask_type == nil or current_mask_type == "" then
-    current_mask_type = "円"
+if current_mask_type == nil or current_mask_type == "" then current_mask_type="円" end
+local show_guides=obj.getoption("gui")
+-- Read handle edits BEFORE deriving positions for this frame.
+if show_guides then
+    if fixed_enabled then obj.setanchor("mask_x,mask_y",0,"screen")
+    else obj.setanchor("mask_x,mask_y",0) end
 end
-
-local function screen_relative_to_object_local(rel_x, rel_y)
-    local target_x = screen_w * 0.5 + rel_x
-    local target_y = screen_h * 0.5 + rel_y
-    local dx = target_x - screen_center_x
-    local dy = target_y - screen_center_y
-
-    local inv_x = dx * cos_r + dy * sin_r
-    local inv_y = -dx * sin_r + dy * cos_r
-
-    local safe_scale_x = scale_x
-    local safe_scale_y = scale_y
-    if math.abs(safe_scale_x) < 0.00001 then
-        safe_scale_x = safe_scale_x < 0 and -0.00001 or 0.00001
-    end
-    if math.abs(safe_scale_y) < 0.00001 then
-        safe_scale_y = safe_scale_y < 0 and -0.00001 or 0.00001
-    end
-
-    return inv_x / safe_scale_x, inv_y / safe_scale_y
-end
-
-local effective_mask_x = mask_x
-local effective_mask_y = mask_y
+local effective_mask_x,effective_mask_y=mask_x,mask_y
+local mask_projection_valid=true
 if fixed_enabled then
-    effective_mask_x, effective_mask_y = screen_relative_to_object_local(mask_x, mask_y)
+    effective_mask_x,effective_mask_y=screen_relative_to_object_local(mask_x,mask_y)
+    if not effective_mask_x then
+        mask_projection_valid=false
+        effective_mask_x,effective_mask_y=0,0
+    end
 end
 
 local function build_mask_guide_points(shape_name, cx, cy, size, aspect, rotation_deg)
@@ -596,83 +616,21 @@ local function build_mask_guide_points(shape_name, cx, cy, size, aspect, rotatio
     return points, #points / 2
 end
 
-local function object_local_to_screen_relative(local_x, local_y)
-    -- Convert the SAME local coordinates used by the actual Mask effect into
-    -- screen-anchor coordinates. This includes the object's scale + rotation.
-    --
-    -- "screen" anchor coordinates are relative to the composition center, so
-    -- base_x / base_y are added after the local transform.
-    local lx = local_x * scale_x
-    local ly = local_y * scale_y
-    local rx = lx * cos_r - ly * sin_r
-    local ry = lx * sin_r + ly * cos_r
-    return base_x + rx, base_y + ry
-end
-
-if obj.getoption("gui") then
-    -- Both modes expose a draggable center handle.
-    if fixed_enabled then
-        obj.setanchor("mask_x,mask_y", 0, "screen")
-    else
-        obj.setanchor("mask_x,mask_y", 0)
-    end
-
-    if fixed_enabled then
-        -- IMPORTANT:
-        -- The actual Mask still lives in object-local space after the fixed
-        -- screen center has been converted by screen_relative_to_object_local().
-        -- Therefore its displayed outline must be built in that SAME local
-        -- space first, then transformed to screen coordinates.
-        --
-        -- The previous preview incorrectly used mask_size directly as screen
-        -- pixels, so object scale/rotation made the big guide circle disagree
-        -- with the real covered area.
-        local local_points, guide_count = build_mask_guide_points(
-            current_mask_type,
-            effective_mask_x,
-            effective_mask_y,
-            mask_size,
-            mask_aspect,
-            mask_rotation
-        )
-
-        if guide_count >= 2 then
-            local screen_points = {}
-            for i = 1, #local_points, 2 do
-                local sx, sy = object_local_to_screen_relative(
-                    local_points[i],
-                    local_points[i + 1]
-                )
-                screen_points[#screen_points + 1] = sx
-                screen_points[#screen_points + 1] = sy
-            end
-            obj.setanchor(screen_points, guide_count, "loop", "screen")
-        end
-    else
-        local guide_points, guide_count = build_mask_guide_points(
-            current_mask_type,
-            effective_mask_x,
-            effective_mask_y,
-            mask_size,
-            mask_aspect,
-            mask_rotation
-        )
-
-        if guide_count >= 2 then
-            obj.setanchor(guide_points, guide_count, "loop")
-        end
-    end
+-- Both outlines are object-local, so native anchor projection handles every
+-- rotation and depth component; only the fixed-light center handle is screen-local.
+if show_guides and mask_projection_valid then
+    local guide_points,guide_count=build_mask_guide_points(current_mask_type,
+        effective_mask_x,effective_mask_y,mask_size,mask_aspect,mask_rotation)
+    if guide_count>=2 then obj.setanchor(guide_points,guide_count,"loop") end
 end
 
 -- Convert an object-local coordinate directly to framebuffer coordinates.
 -- mask_x / mask_y use this same local coordinate system, so color sampling
 -- can follow the Mask center even when that center is outside the character.
-local function object_local_to_framebuffer(local_x, local_y)
-    local lx = local_x * scale_x
-    local ly = local_y * scale_y
-    local rx = lx * cos_r - ly * sin_r
-    local ry = lx * sin_r + ly * cos_r
-    return math.floor(screen_center_x + rx + 0.5), math.floor(screen_center_y + ry + 0.5)
+local function object_local_to_framebuffer(local_x,local_y)
+    local x,y=object_local_to_screen_relative(local_x,local_y)
+    if not x then return nil end
+    return math.floor(screen_w*0.5+x+0.5),math.floor(screen_h*0.5+y+0.5)
 end
 
 -- Local background color and brightness sampling.
@@ -714,7 +672,7 @@ local global_light_factor = 0
 local left_light_factor = 0
 local right_light_factor = 0
 
-if has_background then
+if has_background and mask_projection_valid then
     -- Force a fresh read from the current framebuffer before sampling.
     obj.pixeloption("get", "framebuffer")
 
@@ -746,7 +704,7 @@ if has_background then
                 local local_y = effective_mask_y + ny * pickup_radius
                 local fx, fy = object_local_to_framebuffer(local_x, local_y)
 
-                if fx >= 0 and fy >= 0 and fx < screen_w and fy < screen_h then
+                if fx and fx >= 0 and fy >= 0 and fx < screen_w and fy < screen_h then
                     local r, g, b, a = obj.getpixel(fx, fy, "rgb")
                     if r and a and a > 0 then
                         local lum = luminance(r, g, b)
@@ -909,177 +867,62 @@ local function color_value(c)
 end
 
 
--- -------------------------------------------------------------------------
--- Memory-adaptive rendering
---
--- AviUtl2 internally uses RGBA 16-bit float images. Large source PNG/PSD
--- textures therefore become expensive very quickly when several full-size
--- cache buffers are alive at once.
---
--- The character itself is still drawn at its ORIGINAL resolution.
--- Only the soft backlight working image is automatically reduced when the
--- source is very large. This keeps high-resolution line art sharp while
--- preventing the Light / cache chain from exhausting VRAM.
--- -------------------------------------------------------------------------
-
--- Only rebuild a larger transparent canvas when standard clipping is
--- actually present.
---
--- Earlier builds always enlarged the work canvas to contain the whole lighting
--- circle, even for an ordinary un-clipped image. That forced a needless
--- object -> tempbuffer -> object copy at 1:1 scale. Besides subtly changing
--- sampling, that created the "X=86 -> 87 jumps by one pixel" behaviour.
---
--- With no clipping, keep the original object buffer untouched and let
--- AviUtl2's native obj.draw() transform handle X/Y/Z and Center X/Y/Z.
-local has_standard_clipping =
-    (clip_top + clip_bottom + clip_left + clip_right) > 0.0001
-
-local unclipped_w = src_w
-local unclipped_h = src_h
-local canvas_w = src_w
-local canvas_h = src_h
-local source_offset_x = 0
-local source_offset_y = 0
-
-if has_standard_clipping then
-    -- Reconstruct the image rectangle before clipping.
-    unclipped_w = math.max(src_w + clip_left + clip_right, src_w)
-    unclipped_h = math.max(src_h + clip_top + clip_bottom, src_h)
-
-    -- In the clipping path only, keep enough transparent canvas around the
-    -- processed image for the lighting area. This preserves support for
-    -- heavily clipped 4000x4000 artwork.
-    local mask_radius = math.max(mask_size, 0) * 0.5
-    local mask_radius_x = mask_radius
-    local mask_radius_y = mask_radius
-    local canvas_aspect = clamp(mask_aspect, -100, 100) / 100
-
-    -- Keep the clipping-support canvas consistent with the native Mask:
-    -- positive values compress X, negative values compress Y.
-    if canvas_aspect >= 0 then
-        mask_radius_x = mask_radius_x * (1 - canvas_aspect)
-    else
-        mask_radius_y = mask_radius_y * (1 + canvas_aspect)
-    end
-
-    local mask_r = mask_rotation * pi / 180
-    local mask_cos = math.cos(mask_r)
-    local mask_sin = math.sin(mask_r)
-    local mask_extent_x =
-        math.abs(mask_cos) * mask_radius_x +
-        math.abs(mask_sin) * mask_radius_y +
-        math.max(mask_blur, 0)
-    local mask_extent_y =
-        math.abs(mask_sin) * mask_radius_x +
-        math.abs(mask_cos) * mask_radius_y +
-        math.max(mask_blur, 0)
-
-    local canvas_half_w = math.max(
-        unclipped_w * 0.5,
-        math.abs(effective_mask_x) + mask_extent_x
-    )
-    local canvas_half_h = math.max(
-        unclipped_h * 0.5,
-        math.abs(effective_mask_y) + mask_extent_y
-    )
-
-    canvas_w = math.max(1, math.ceil(canvas_half_w * 2))
-    canvas_h = math.max(1, math.ceil(canvas_half_h * 2))
-
-    local extra_pad_x = (canvas_w - unclipped_w) * 0.5
-    local extra_pad_y = (canvas_h - unclipped_h) * 0.5
-    source_offset_x = extra_pad_x + clip_left
-    source_offset_y = extra_pad_y + clip_top
-end
-
-local source_pixels = canvas_w * canvas_h
-local max_work_dimension = 3072
-local max_work_pixels = 6000000
-
-local work_scale = 1.0
-if canvas_w > max_work_dimension then
-    work_scale = math.min(work_scale, max_work_dimension / canvas_w)
-end
-if canvas_h > max_work_dimension then
-    work_scale = math.min(work_scale, max_work_dimension / canvas_h)
-end
-if source_pixels > max_work_pixels then
-    work_scale = math.min(work_scale, math.sqrt(max_work_pixels / source_pixels))
-end
-
--- Avoid microscopic resampling differences for ordinary-size artwork.
-if work_scale > 0.995 then
-    work_scale = 1.0
-end
-
-local work_w = math.max(1, math.floor(canvas_w * work_scale + 0.5))
-local work_h = math.max(1, math.floor(canvas_h * work_scale + 0.5))
-local work_inv_scale = 1.0 / work_scale
-
--- L2 + L3: brightness is applied to the original full-resolution character.
--- Draw it immediately, before we replace the current object with a smaller
--- light-working image.
+-- Bound only the light-working surfaces. The original is drawn at full
+-- resolution before its buffer is replaced; never cache several large copies.
+local work_scale=math.min(1,3072/src_w,3072/src_h,
+    math.sqrt(4000000/(src_w*src_h)))
+local use_proxy=work_scale<1
+local work_w=math.max(1,math.floor(src_w*work_scale))
+local work_h=math.max(1,math.floor(src_h*work_scale))
+local work_sx,work_sy=work_w/src_w,work_h/src_h
 obj.effect("色調補正", "明るさ", bright)
-obj.setoption("blend", "none")
-obj.draw()
+source_relative_cx = obj.cx or 0
+source_relative_cy = obj.cy or 0
+source_relative_cz = obj.cz or 0
+local work_relative_cx,work_relative_cy,work_relative_cz=
+    source_relative_cx,source_relative_cy,source_relative_cz
+if use_proxy then
+    obj.setoption("blend","none")
+    obj.draw()
+    if not obj.copybuffer("cache:autobacklight_sharp_frame","framebuffer") then return end
+    obj.clearbuffer("tempbuffer",work_w,work_h)
+    obj.pixelshader("backlight_work_resize","tempbuffer","object",nil,"copy","clamp")
+    if not obj.copybuffer("object","tempbuffer") then return end
+    obj.clearbuffer("tempbuffer",1,1)
+    work_relative_cx,work_relative_cy,work_relative_cz=-output_cx,-output_cy,-output_cz
+    obj.cx,obj.cy,obj.cz=work_relative_cx,work_relative_cy,work_relative_cz
+end
+if not obj.copybuffer("cache:autobacklight_workbase","object") then return end
 
--- Build a reduced working copy only when the source is unusually large.
---
--- Do NOT resize it with obj.draw() into tempbuffer. Filters such as
--- Clipping can change the object's image rectangle/origin, while tempbuffer
--- drawing ignores the object's normal transform. On very large artwork that
--- mismatch can move the lighting proxy away from the processed image and make
--- the lighting appear to disappear.
---
--- Instead, resize the current processed object buffer directly with a pixel
--- shader. UV 0..1 maps the complete post-effect image to the reduced buffer, so
--- clipping and other size-changing effects remain aligned.
-local needs_proxy_canvas =
-    work_scale < 1.0 or
-    has_standard_clipping
-
-if needs_proxy_canvas then
-    obj.clearbuffer("tempbuffer", work_w, work_h)
-    local proxy_sampler = "dot"
-    if work_scale < 1.0 then
-        proxy_sampler = "clamp"
-    end
-
-    obj.pixelshader(
-        "backlight_proxy_resize",
-        "tempbuffer",
-        "object",
-        {
-            src_w,
-            src_h,
-            canvas_w,
-            canvas_h,
-
-            source_offset_x,
-            source_offset_y,
-            0,
-            0
-        },
-        "copy",
-        proxy_sampler
-    )
-    obj.copybuffer("object", "tempbuffer")
+local function restore_workbase()
+    obj.copybuffer("object", "cache:autobacklight_workbase")
+    obj.cx = work_relative_cx
+    obj.cy = work_relative_cy
+    obj.cz = work_relative_cz
 end
 
--- This is now the only persistent character-sized base cache.
--- For large artwork it is the reduced proxy, not the original 4K+ texture.
-obj.copybuffer("cache:autobacklight_workbase", "object")
+local function restore_background()
+    if has_background then obj.copybuffer("framebuffer","cache:aul2_backlight_bg")
+    else obj.clearbuffer("framebuffer") end
+end
 
--- The large-image proxy no longer needs tempbuffer after workbase is cached.
--- Shrink the temporary surface before allocating background / dual-color
--- buffers to reduce peak VRAM usage on 4000x4000 artwork.
-obj.clearbuffer("tempbuffer", 1, 1)
+-- Explicit source-space vertices avoid scaling Center Z or the object's
+-- depth when enlarging a proxy. Roundoff in work_w/work_h is handled per axis.
+local function draw_work_image(offset_x,offset_y)
+    if not use_proxy then obj.draw(); return end
+    local x0=-src_w*0.5-offset_x/work_sx
+    local y0=-src_h*0.5-offset_y/work_sy
+    local x1=x0+obj.w/work_sx
+    local y1=y0+obj.h/work_sy
+    local saved_cx,saved_cy,saved_cz=obj.cx,obj.cy,obj.cz
+    obj.cx,obj.cy,obj.cz=source_relative_cx,source_relative_cy,source_relative_cz
+    obj.setoption("sampler","clip")
+    obj.drawpoly(x0,y0,0,x1,y0,0,x1,y1,0,x0,y1,0,
+        0,0,obj.w,0,obj.w,obj.h,0,obj.h)
+    obj.setoption("sampler")
+    obj.cx,obj.cy,obj.cz=saved_cx,saved_cy,saved_cz
+end
 
-
--- Prepare the blurred L1 background only after the original character has
--- already been converted into the small working copy. This avoids needing a
--- second full-resolution source cache just to restore the character.
 if has_background and env_blend > 0 then
     obj.copybuffer("object", "cache:aul2_backlight_bg")
     obj.effect("ぼかし", "範囲", env_blur, "縦横比", 0, "光の強さ", 0, "サイズ固定", 1)
@@ -1087,10 +930,6 @@ if has_background and env_blend > 0 then
 end
 
 local work_diffusion = light_diffusion * work_scale
-local work_mask_x = effective_mask_x * work_scale
-local work_mask_y = effective_mask_y * work_scale
-local work_mask_size = mask_size * work_scale
-local work_mask_blur = mask_blur * work_scale
 
 local function resolve_light_factor(light_factor)
     if not brightness_link_enabled then
@@ -1124,7 +963,7 @@ local function apply_outline(color, light_factor)
 
     -- In Outline mode, Spread becomes the TOTAL rim width.
     local total_width =
-        clamp(1.0 + work_diffusion * 0.30, 1.0, 64.0)
+        clamp(1.0 + light_diffusion * 0.30, 1.0, 64.0) * work_scale
 
     -- Reuse Bias as the inside/outside distribution:
     --  -100 = all outside
@@ -1182,8 +1021,8 @@ local function apply_outline(color, light_factor)
 end
 
 if color_mode_value == COLOR_MODE_SINGLE then
-    -- Single-color mode needs only one reduced working image.
-    obj.copybuffer("object", "cache:autobacklight_workbase")
+    -- Single-color mode uses one bounded lighting pass.
+    restore_workbase()
 
     if lighting_style == STYLE_OUTLINE then
         -- Outline: use the native Outline effect instead of Light.
@@ -1193,16 +1032,8 @@ if color_mode_value == COLOR_MODE_SINGLE then
         apply_light(global_color, global_light_factor)
     end
 else
-    -- Dual-color mode used to allocate another large persistent cache for the
-    -- left lighting pass. With a 4000x4000 source, the reduced proxy is still
-    -- around six million pixels, so that extra surface can exhaust the frame's
-    -- image-buffer budget before Background Blend creates its mask/background
-    -- buffers.
-    --
-    -- Reuse tempbuffer for the left pass instead. AviUtl2 allows tempbuffer to
-    -- be used directly as a pixelshader resource, so no second character-sized
-    -- cache is necessary.
-    obj.copybuffer("object", "cache:autobacklight_workbase")
+    -- Reuse the temporary buffer for the first color pass.
+    restore_workbase()
     if lighting_style == STYLE_OUTLINE then
         apply_outline(left_color, left_light_factor)
     else
@@ -1210,7 +1041,7 @@ else
     end
     obj.copybuffer("tempbuffer", "object")
 
-    obj.copybuffer("object", "cache:autobacklight_workbase")
+    restore_workbase()
     if lighting_style == STYLE_OUTLINE then
         apply_outline(right_color, right_light_factor)
     else
@@ -1235,56 +1066,58 @@ else
     obj.clearbuffer("tempbuffer", 1, 1)
 end
 
--- Apply the shared mask in the proxy's pixel units. The final draw is enlarged
--- by the inverse proxy scale, so the on-screen mask size stays identical to
--- the user-facing parameters.
+-- Native effects may enlarge the image and update its relative center.
+-- Retain that change, but never inherit a previous pass's center adjustment.
+local light_w, light_h = obj.w, obj.h
+local light_cx, light_cy, light_cz = obj.cx, obj.cy, obj.cz
+local base_offset_x = (light_w - work_w) * 0.5 + light_cx - work_relative_cx
+local base_offset_y = (light_h - work_h) * 0.5 + light_cy - work_relative_cy
+obj.copybuffer("tempbuffer", "object")
+
+-- Generate coverage separately: Mask must not resample the character, and
+-- the user's drawing pivot must not move the mask inside the image buffer.
+obj.clearbuffer("object", light_w, light_h, 0xffffff)
+obj.cx, obj.cy, obj.cz = -output_cx, -output_cy, -output_cz
 obj.effect(
     "マスク",
-    "X", work_mask_x,
-    "Y", work_mask_y,
+    "X", effective_mask_x * work_sx + light_cx - work_relative_cx,
+    "Y", effective_mask_y * work_sy + light_cy - work_relative_cy,
     "回転", mask_rotation,
-    "サイズ", work_mask_size,
+    "サイズ", mask_projection_valid and mask_size * work_scale or 0,
     "縦横比", mask_aspect,
-    "ぼかし", work_mask_blur,
+    "ぼかし", mask_blur * work_scale,
     "type", current_mask_type,
     "マスクの反転", 0,
     "元のサイズに合わせる", 0
 )
-
--- L4-L7: restore the proxy to the original on-screen size.
---
--- Large-image proxy center correction:
--- The proxy image is work_scale times smaller than the source, therefore the
--- effective center coordinates used when the proxy is enlarged must also be
--- work_scale times smaller.  Otherwise changing the output Center X / Y / Z makes
--- the proxy's original-image component shift away from the full-resolution
--- character and appear as a duplicated/ghost image.
---
--- obj.getvalue("cx"/"cy"/"cz") is the base center and obj.cx/obj.cy/obj.cz are writable
--- relative-center offsets.  Add a temporary relative correction so that:
---
---   output_center + corrected_relative_center
---     = (output_center + original_relative_center) * work_scale
---
--- Restore the original values immediately after drawing so the rest of the
--- script and following processing see the user's original transform.
-local saved_relative_cx = obj.cx or 0
-local saved_relative_cy = obj.cy or 0
-local saved_relative_cz = obj.cz or 0
-
-if work_scale < 1.0 then
-    obj.cx = saved_relative_cx + center_x * (work_scale - 1.0)
-    obj.cy = saved_relative_cy + center_y * (work_scale - 1.0)
-    obj.cz = saved_relative_cz + center_z * (work_scale - 1.0)
-end
-
+if not mask_projection_valid then obj.clearbuffer("object") end
+obj.pixelshader(
+    "backlight_range_composite", "object",
+    {"tempbuffer", "cache:autobacklight_workbase", "object"},
+    {work_w, work_h, base_offset_x, base_offset_y,
+        lighting_style == STYLE_OUTLINE and 1 or 0, 0, 0, 0},
+    "copy", "dot"
+)
+obj.cx, obj.cy, obj.cz = light_cx, light_cy, light_cz
+obj.clearbuffer("tempbuffer", 1, 1)
 obj.setoption("blend", "none")
-obj.draw(0, 0, 0, work_inv_scale)
-
-if work_scale < 1.0 then
-    obj.cx = saved_relative_cx
-    obj.cy = saved_relative_cy
-    obj.cz = saved_relative_cz
+if use_proxy then
+    restore_background()
+    draw_work_image(base_offset_x,base_offset_y)
+    if not obj.copybuffer("cache:autobacklight_lit_frame","framebuffer") then
+        obj.copybuffer("framebuffer","cache:autobacklight_sharp_frame")
+        return
+    end
+    restore_workbase()
+    restore_background()
+    draw_work_image(0,0)
+    obj.pixelshader("backlight_detail_restore","framebuffer",
+        {"cache:autobacklight_sharp_frame","cache:autobacklight_lit_frame","framebuffer"},
+        nil,"copy","dot")
+    obj.clearbuffer("cache:autobacklight_sharp_frame",1,1)
+    obj.clearbuffer("cache:autobacklight_lit_frame",1,1)
+else
+    obj.draw()
 end
 
 -- L8-L10 environment Multiply.
@@ -1306,35 +1139,12 @@ if has_background and env_blend > 0 then
     )
 
     if has_pre_env then
-        -- Rebuild only the object's alpha mask in screen space.
-        obj.copybuffer("object", "cache:autobacklight_workbase")
-
-        -- Save the CURRENT state only so it can be restored afterwards.
-        -- For the mask draw itself, always start from the object's ORIGINAL
-        -- relative center captured before the Lighting path ran.
-        --
-        -- This matters in Dual Color + very large-image mode: the two native
-        -- Light passes and their image-size changes can leave the current
-        -- relative center different from the source object's transform. The
-        -- previous code then applied the 4K proxy correction on top of that
-        -- altered value, moving the environment mask away from the character.
-        local env_restore_cx = obj.cx or 0
-        local env_restore_cy = obj.cy or 0
-        local env_restore_cz = obj.cz or 0
-
-        obj.cx = source_relative_cx
-        obj.cy = source_relative_cy
-        obj.cz = source_relative_cz
-
-        if work_scale < 1.0 then
-            obj.cx = source_relative_cx + center_x * (work_scale - 1.0)
-            obj.cy = source_relative_cy + center_y * (work_scale - 1.0)
-            obj.cz = source_relative_cz + center_z * (work_scale - 1.0)
-        end
+        local env_restore_cx, env_restore_cy, env_restore_cz = obj.cx, obj.cy, obj.cz
+        restore_workbase()
 
         obj.clearbuffer("framebuffer")
         obj.setoption("blend", "none")
-        obj.draw(0, 0, 0, work_inv_scale)
+        draw_work_image(0,0)
         local has_env_mask = obj.copybuffer(
             "cache:autobacklight_envmask",
             "framebuffer"
