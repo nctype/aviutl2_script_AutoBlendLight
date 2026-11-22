@@ -1,11 +1,9 @@
 # AutoBlendLight
 
-<img width="1920" height="1080" alt="Image" src="https://github.com/user-attachments/assets/11d768d5-6eb6-4dbd-b6a4-87a476d906fb" />
+[![demo](preview.png)](https://github.com/user-attachments/assets/7d5e5f9e-e3b7-4e24-9f33-24da227f4015)
 
 <details open>
 <summary><strong>日本語　▲ 🌐 Switch Language</strong></summary>
-
-▶️ [紹介動画(ニコニコ)](https://www.nicovideo.jp/watch/sm46673305)
 
 ## 概要
 
@@ -88,8 +86,6 @@ X / Y、サイズ、角度、縦横比、縁ぼかしを調整できます。
 <details>
 <summary><strong>中文</strong></summary>
 
-▶️ [介绍视频(bilibili)](www.bilibili.com/video/BV1mHgc6VEBb)
-
 ## 概要
 
 **AutoBlendLight** 是用于让 AviUtl2 中的对象更自然地融入背景光照和色彩的脚本。  
@@ -170,8 +166,6 @@ X / Y、サイズ、角度、縦横比、縁ぼかしを調整できます。
 
 <details>
 <summary><strong>English</strong></summary>
-
-▶️ [Overview video(niconico)](https://www.nicovideo.jp/watch/sm46673305)
 
 ## Overview
 
